@@ -5,16 +5,25 @@ int myFunction(int, int);
 
 void setup() {
   // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  pinMode(P1_1,INPUT_PULLUP);
+  digitalWrite(P1_1,HIGH);
+  pinMode(P1_0,OUTPUT);
+  /*
+  R1REN |=BIT1;    //R1REN=R1REN|BIT1;
+  P1OUT |=BIT1;
+  */
+
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  if((digitalRead(P1_1)==0)){
-    digitalWrite(P1_0,HIGH);
+
+if((digitalRead(P1_1)==0)){
+  digitalWrite(P1_0,HIGH);
   }
- // else
-  //  digitalWrite(P1_0)
+  else
+   digitalWrite(P1_0,LOW);
+
+  // put your main code here, to run repeatedly:
 }
 
 // put function definitions here:
