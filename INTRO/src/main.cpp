@@ -14,6 +14,7 @@ void loop()
 {
   int switchState = digitalRead(switchPin);
 
+// Ved tryk, tændes diode.
   if (switchState == LOW)
   {
     digitalWrite(ledPin, HIGH);
