@@ -3,15 +3,13 @@
 const int switchPin = P2_1; 
 const int ledPin = P1_0;
 
-void setup()
-{
+void setup(){
   pinMode(switchPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
   digitalWrite(switchPin, HIGH);
 }
 
-void loop()
-{
+void loop(){
   int switchState = digitalRead(switchPin);
 
   if (switchState == LOW) {
