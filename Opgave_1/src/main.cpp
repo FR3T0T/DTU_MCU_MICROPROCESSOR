@@ -5,6 +5,7 @@
 
 #define NUM_OPERATIONS 4
 
+// Pin Definitions
 const int switchPin = P2_1;
 const int operationSwitchPin = P1_1;
 const int dipPin0 = P6_0;
@@ -16,13 +17,16 @@ const int dipPin5 = P6_5;
 const int dipPin6 = P6_6;
 const int dipPin7 = P7_0;
 
-// Declare global variables before any functions
-unsigned char variable1 = 0, variable2 = 0; // Accessible globally
+// Global Variables
+unsigned char variable1 = 0, variable2 = 0;
 int operationCount = 0;
 char operations[] = {'+', '-', '*', '/'};
 char expressionStr[30]; // Holds the expression being built
 char resultStr[30];     // Holds the final result or error message
 
+bool waitingForNextCalculation = false; // Flag to lock the result screen
+
+// Function to read the DIP switches
 unsigned char readDipswitch() {
   unsigned char value = 0;
   value |= (digitalRead(dipPin0) == LOW ? 1 : 0) << 0;
@@ -36,17 +40,26 @@ unsigned char readDipswitch() {
   return value;
 }
 
+// Function to update the display with up to three lines of text
+void updateDisplay(const char* line1, const char* line2 = "", const char* line3 = "") {
+  ssd1306_clearDisplay();
+  ssd1306_printText(0, 0, line1);
+  ssd1306_printText(0, 1, line2);
+  ssd1306_printText(0, 2, line3);
+  // No need to call ssd1306_display() if your library updates automatically
+}
+
+// Function to check if the operation switch is pressed
 void checkOperationSwitch() {
-  if (digitalRead(operationSwitchPin) == LOW) {
+  if (!waitingForNextCalculation && digitalRead(operationSwitchPin) == LOW) {
     operationCount = (operationCount + 1) % NUM_OPERATIONS;
     while (digitalRead(operationSwitchPin) == LOW) {
       delay(50); // Debounce
     }
     // Update display with new operation
-    ssd1306_clearDisplay();
     sprintf(expressionStr, "%d %c", variable1, operations[operationCount]);
-    ssd1306_printText(0, 0, expressionStr);
-    delay(500); // Brief delay to allow the user to see the change
+    updateDisplay("Select Operation", expressionStr);
+    delay(500); // Brief delay
   }
 }
 
@@ -73,15 +86,15 @@ void setup() {
 void loop() {
   int result = 0;
   bool error = false;
+  waitingForNextCalculation = false; // Reset the flag at the beginning of the loop
 
   // ======== Step 1: Input First Variable ========
-  ssd1306_clearDisplay();
-  ssd1306_printText(0, 0, "Set First Number");
+  updateDisplay("Set First Number");
   while (digitalRead(switchPin) == HIGH) {
     checkOperationSwitch(); // Check for operation change
     variable1 = readDipswitch();
     sprintf(expressionStr, "%d", variable1);
-    ssd1306_printText(0, 1, expressionStr);
+    updateDisplay("Set First Number", expressionStr);
     delay(100); // Update every 100ms
   }
   while (digitalRead(switchPin) == LOW) {
@@ -89,17 +102,12 @@ void loop() {
   }
 
   // ======== Step 2: Select Operation ========
-  ssd1306_clearDisplay();
-  ssd1306_printText(0, 0, "Select Operation");
-  // Display current expression with operation
   sprintf(expressionStr, "%d %c", variable1, operations[operationCount]);
-  ssd1306_printText(0, 1, expressionStr);
-  // Wait for the user to press the switchPin to confirm operation
+  updateDisplay("Select Operation", expressionStr);
   while (digitalRead(switchPin) == HIGH) {
     checkOperationSwitch(); // Allow changing operation
-    // Update the displayed operation
     sprintf(expressionStr, "%d %c", variable1, operations[operationCount]);
-    ssd1306_printText(0, 1, expressionStr);
+    updateDisplay("Select Operation", expressionStr);
     delay(100); // Update every 100ms
   }
   while (digitalRead(switchPin) == LOW) {
@@ -107,14 +115,12 @@ void loop() {
   }
 
   // ======== Step 3: Input Second Variable ========
-  ssd1306_clearDisplay();
-  ssd1306_printText(0, 0, "Set Second Number");
+  updateDisplay("Set Second Number");
   while (digitalRead(switchPin) == HIGH) {
     checkOperationSwitch(); // Check for operation change
     variable2 = readDipswitch();
-    // Update the expression with the second variable
     sprintf(expressionStr, "%d %c %d", variable1, operations[operationCount], variable2);
-    ssd1306_printText(0, 1, expressionStr);
+    updateDisplay("Set Second Number", expressionStr);
     delay(100); // Update every 100ms
   }
   while (digitalRead(switchPin) == LOW) {
@@ -122,10 +128,8 @@ void loop() {
   }
 
   // ======== Step 4: Display Complete Expression ========
-  ssd1306_clearDisplay();
   sprintf(expressionStr, "%d %c %d", variable1, operations[operationCount], variable2);
-  ssd1306_printText(0, 0, "Calculating:");
-  ssd1306_printText(0, 1, expressionStr);
+  updateDisplay("Calculating:", expressionStr);
   delay(1000); // Brief pause before calculation
 
   // ======== Step 5: Perform Calculation ========
@@ -150,30 +154,32 @@ void loop() {
   }
 
   // ======== Step 6: Display Result ========
-  ssd1306_clearDisplay();
   if (!error) {
     sprintf(resultStr, "%d %c %d = %d", variable1, operations[operationCount], variable2, result);
-    ssd1306_printText(0, 0, "Result:");
-    ssd1306_printText(0, 1, resultStr);
+    updateDisplay("Result:", resultStr, "P1.1 to restart");
   } else {
-    ssd1306_printText(0, 0, resultStr); // Display error message
+    updateDisplay("Error:", resultStr, "P1.1 to restart");
   }
-  // Display prompt to continue
-  ssd1306_printText(0, 2, "Press button to continue");
 
   // ======== Step 7: Wait for OperationSwitchPin Press to Proceed ========
-  // Wait until operationSwitchPin is pressed
+  waitingForNextCalculation = true; // Set the flag to lock operation changes
   while (digitalRead(operationSwitchPin) == HIGH) {
-    // Wait for button press
     delay(50); // Debounce delay
   }
   while (digitalRead(operationSwitchPin) == LOW) {
-    // Wait for button release
     delay(50); // Debounce delay
   }
+  waitingForNextCalculation = false; // Unlock operation changes
+
+  // Clear display before starting the next calculation
+  ssd1306_clearDisplay();
 
   // After button press, proceed to next calculation
 }
+
+
+
+
 
 
 
