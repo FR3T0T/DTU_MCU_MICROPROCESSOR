@@ -40,13 +40,26 @@ unsigned char readDipswitch() {
   return value;
 }
 
-// Function to update the display with up to three lines of text
-void updateDisplay(const char* line1, const char* line2 = "", const char* line3 = "") {
-  ssd1306_clearDisplay();
-  ssd1306_printText(0, 0, line1);
-  ssd1306_printText(0, 1, line2);
-  ssd1306_printText(0, 2, line3);
-  // No need to call ssd1306_display() if your library updates automatically
+// Function to update the display without clearing it entirely
+void updateDisplay(const char* line1 = NULL, const char* line2 = NULL, const char* line3 = NULL) {
+  if (line1 != NULL) {
+    // Clear line 1 by printing spaces
+    ssd1306_printText(0, 0, "                    "); // Adjust the number of spaces as needed
+    // Print new content
+    ssd1306_printText(0, 0, line1);
+  }
+  if (line2 != NULL) {
+    // Clear line 2
+    ssd1306_printText(0, 1, "                    ");
+    // Print new content
+    ssd1306_printText(0, 1, line2);
+  }
+  if (line3 != NULL) {
+    // Clear line 3
+    ssd1306_printText(0, 2, "                    ");
+    // Print new content
+    ssd1306_printText(0, 2, line3);
+  }
 }
 
 // Function to check if the operation switch is pressed
@@ -56,9 +69,9 @@ void checkOperationSwitch() {
     while (digitalRead(operationSwitchPin) == LOW) {
       delay(50); // Debounce
     }
-    // Update display with new operation
+    // Update only the second line with the new operation
     sprintf(expressionStr, "%d %c", variable1, operations[operationCount]);
-    updateDisplay("Select Operation", expressionStr);
+    updateDisplay(NULL, expressionStr);
     delay(500); // Brief delay
   }
 }
@@ -90,12 +103,16 @@ void loop() {
 
   // ======== Step 1: Input First Variable ========
   updateDisplay("Set First Number");
+  unsigned char prevVariable1 = 255; // Initialize to a value that won't match the first read
   while (digitalRead(switchPin) == HIGH) {
     checkOperationSwitch(); // Check for operation change
     variable1 = readDipswitch();
-    sprintf(expressionStr, "%d", variable1);
-    updateDisplay("Set First Number", expressionStr);
-    delay(100); // Update every 100ms
+    if (variable1 != prevVariable1) {
+      prevVariable1 = variable1;
+      sprintf(expressionStr, "%d", variable1);
+      updateDisplay(NULL, expressionStr); // Update only the second line
+    }
+    delay(100); // Reduce update frequency to every 100ms
   }
   while (digitalRead(switchPin) == LOW) {
     delay(50); // Debounce
@@ -106,9 +123,7 @@ void loop() {
   updateDisplay("Select Operation", expressionStr);
   while (digitalRead(switchPin) == HIGH) {
     checkOperationSwitch(); // Allow changing operation
-    sprintf(expressionStr, "%d %c", variable1, operations[operationCount]);
-    updateDisplay("Select Operation", expressionStr);
-    delay(100); // Update every 100ms
+    delay(100); // Wait
   }
   while (digitalRead(switchPin) == LOW) {
     delay(50); // Debounce
@@ -116,12 +131,16 @@ void loop() {
 
   // ======== Step 3: Input Second Variable ========
   updateDisplay("Set Second Number");
+  unsigned char prevVariable2 = 255;
   while (digitalRead(switchPin) == HIGH) {
     checkOperationSwitch(); // Check for operation change
     variable2 = readDipswitch();
-    sprintf(expressionStr, "%d %c %d", variable1, operations[operationCount], variable2);
-    updateDisplay("Set Second Number", expressionStr);
-    delay(100); // Update every 100ms
+    if (variable2 != prevVariable2) {
+      prevVariable2 = variable2;
+      sprintf(expressionStr, "%d %c %d", variable1, operations[operationCount], variable2);
+      updateDisplay(NULL, expressionStr); // Update only the second line
+    }
+    delay(100); // Reduce update frequency to every 100ms
   }
   while (digitalRead(switchPin) == LOW) {
     delay(50); // Debounce
@@ -173,10 +192,7 @@ void loop() {
 
   // Clear display before starting the next calculation
   ssd1306_clearDisplay();
-
-  // After button press, proceed to next calculation
 }
-
 
 
 
