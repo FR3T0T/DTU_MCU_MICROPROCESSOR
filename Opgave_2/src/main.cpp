@@ -65,7 +65,7 @@ void updateDisplay(const char* line1 = NULL, const char* line2 = NULL, const cha
         ssd1306_printText(0, 2, "                    "); // Clear line 3
         ssd1306_printText(0, 2, line3);
     }
-    //ssd1306_updateScreen(); // Update the entire screen
+    // Note: We're not calling ssd1306_updateScreen() here to allow for more efficient updates
 }
 
 void updateClockDisplay()
@@ -76,9 +76,11 @@ void updateClockDisplay()
     snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, seconds);
     
     updateDisplay("MSP430 Clock", timeStr, dateStr);
+    //ssd1306_updateScreen(); // Update the entire screen after all changes are made
 }
 
-int main(void) {
+void setup() 
+{
     WDTCTL = WDTPW | WDTHOLD; // Stop watchdog timer
 
     // Initialize I2C
@@ -88,6 +90,7 @@ int main(void) {
     ssd1306_init();
     ssd1306_clearDisplay();
     updateDisplay("MSP430 Clock", "Initializing...");
+    //ssd1306_updateScreen(); // Ensure the initial message is displayed
     
     // Short delay to show initial message
     __delay_cycles(1000000);
@@ -98,6 +101,10 @@ int main(void) {
     // Set P1.0 as output for LED
     P1DIR |= BIT0;
     P1OUT &= ~BIT0; // Ensure LED is off
+}
+
+int main(void) {
+    setup();
 
     while (1)
     {
