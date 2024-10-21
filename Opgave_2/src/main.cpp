@@ -1,122 +1,175 @@
-#include <Arduino.h>
-#include <stdint.h>
-#include "i2c.h"
+#include <msp430f5529.h>
 #include "ssd1306.h"
+#include "i2c.h"
+#include <stdio.h>
+#include <pins_energia.h>
 
-// Time variables
-volatile uint8_t seconds = 0;
-volatile uint8_t minutes = 0;
-volatile uint8_t hours = 0;
+const int switchPin = P2_1;
+const int operationSwitchPin = P1_1;
+const int dipPin0 = P6_0;
+const int dipPin1 = P6_1;
+const int dipPin2 = P6_2;
+const int dipPin3 = P6_3;
+const int dipPin4 = P6_4;
+const int dipPin5 = P6_5;
+const int dipPin6 = P6_6;
+const int dipPin7 = P7_0;
 
-// Flag to indicate when to update the display
-volatile bool update_display = false;
-
-void initTimer()
-{
-    // Set TimerA0 to use SMCLK, divide by 64, and count up mode
-    TA0CTL = TASSEL_2 | ID_3 | MC_1;
-    // Set the compare value for 1 second interval
-    TA0CCR0 = 51089; // 1.048 MHz / 64 = 16384
-    // Enable interrupt for compare match
-    TA0CCTL0 = CCIE;
-    // Enable global interrupts
-    __bis_SR_register(GIE);
-}
+volatile unsigned char t_flag = 0;
+volatile unsigned char button_flag = 0;
+volatile unsigned char ss = 0;
+volatile unsigned char mm = 0;
+volatile unsigned char hh = 0;
+volatile unsigned char set_time_stage = 0;
+char tiden[9];
 
 #pragma vector = TIMER0_A0_VECTOR
 __interrupt void Timer_A(void)
 {
-    // Toggle LED on P1.0
     P1OUT ^= BIT0;
-    
-    // Update time
-    seconds++;
-    if (seconds >= 60) {
-        seconds = 0;
-        minutes++;
-        if (minutes >= 60) {
-            minutes = 0;
-            hours++;
-            if (hours >= 24) {
-                hours = 0;
+    if (set_time_stage == 0)
+    {
+        t_flag = 1;     
+        ss++;
+        if (ss == 60)
+        {
+            ss = 0;
+            mm++;
+            if (mm == 60) 
+            {
+                mm = 0;
+                hh++;
+                if (hh == 24) 
+                {
+                    hh = 0;
+                }
             }
         }
     }
-    
-    // Set flag to update display
-    update_display = true;
 }
 
-// Function to update the display without clearing it entirely
-void updateDisplay(const char* line1 = NULL, const char* line2 = NULL, const char* line3 = NULL)
+#pragma vector = PORT2_VECTOR
+__interrupt void Port_2(void)
 {
-    if (line1 != NULL)
+    if (P2IFG & BIT1)
     {
-        ssd1306_printText(0, 0, "                    "); // Clear line 1
-        ssd1306_printText(0, 0, line1);
+        button_flag = 1;
+        set_time_stage++;
+            if (set_time_stage > 3)
+            {
+            set_time_stage = 0;
+            }
+        P2IFG &= ~BIT1;  
     }
-    if (line2 != NULL)
-    {
-        ssd1306_printText(0, 1, "                    "); // Clear line 2
-        ssd1306_printText(0, 1, line2);
-    }
-    if (line3 != NULL)
-    {
-        ssd1306_printText(0, 2, "                    "); // Clear line 3
-        ssd1306_printText(0, 2, line3);
-    }
-    // Note: We're not calling ssd1306_updateScreen() here to allow for more efficient updates
 }
 
-void updateClockDisplay()
+void update_time_string(void)
 {
-    char timeStr[9];
-    char dateStr[11] = "2024-10-10"; // Example date, you can update this as needed
-    
-    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, seconds);
-    
-    updateDisplay("MSP430 Clock", timeStr, dateStr);
-    //ssd1306_updateScreen(); // Update the entire screen after all changes are made
+    sprintf(tiden, "%02d:%02d:%02d", hh, mm, ss);
 }
 
-void setup() 
+unsigned char read_dip_switch(void)
 {
-    WDTCTL = WDTPW | WDTHOLD; // Stop watchdog timer
+    unsigned char value = 0;
+    value |= (P6IN & BIT0) ? 1 : 0;
+    value |= (P6IN & BIT1) ? 2 : 0;
+    value |= (P6IN & BIT2) ? 4 : 0;
+    value |= (P6IN & BIT3) ? 8 : 0;
+    value |= (P6IN & BIT4) ? 16 : 0;
+    value |= (P6IN & BIT5) ? 32 : 0;
+    value |= (P6IN & BIT6) ? 64 : 0;
+    value |= (P7IN & BIT0) ? 128 : 0;
+    return value;
+}
 
-    // Initialize I2C
+void set_time(void)
+{
+    unsigned char dip_value;
+    switch (set_time_stage)
+    {
+        case 1:
+            dip_value = read_dip_switch();
+            hh = dip_value % 24;  // Ensure hours are 0-23
+            sprintf(tiden, "Set HH:%02d", hh);
+            break;
+            
+        case 2:
+            dip_value = read_dip_switch();
+            mm = dip_value % 60;  // Ensure minutes are 0-59
+            sprintf(tiden, "Set MM:%02d", mm);
+            break;
+            
+        case 3:
+            dip_value = read_dip_switch();
+            ss = dip_value % 60;  // Ensure seconds are 0-59
+            sprintf(tiden, "Set SS:%02d", ss);
+            break;
+            
+    }
+    ssd1306_printText(0, 2, tiden);
+}
+
+
+
+int main(void)
+{
+    WDTCTL = WDTPW | WDTHOLD;  
+   
+
     i2c_init();
-
-    // Initialize OLED display
     ssd1306_init();
-    ssd1306_clearDisplay();
-    updateDisplay("MSP430 Clock", "Initializing...");
-    //ssd1306_updateScreen(); // Ensure the initial message is displayed
-    
-    // Short delay to show initial message
-    __delay_cycles(1000000);
+   
 
-    // Initialize TimerA0
-    initTimer();
 
-    // Set P1.0 as output for LED
+    TA0CTL = TASSEL_2 | ID_3 | MC_1; 
+    TA0CCR0 = 16370;  
+    TA0CCTL0 = CCIE; 
+    TA0EX0 = TAIDEX_7;  
+
     P1DIR |= BIT0;
-    P1OUT &= ~BIT0; // Ensure LED is off
-}
+    P1OUT &= ~BIT0; 
 
-int main(void) {
-    setup();
+    // Configure switchPin (P2.1)
+    P2DIR &= ~BIT1;  
+    P2REN |= BIT1;  
+    P2OUT |= BIT1;   
+    P2IE |= BIT1;    
+    P2IES |= BIT1;   
+
+    // Configure operationSwitchPin (P1.1)
+    P1DIR &= ~BIT1;
+    P1REN |= BIT1;
+    P1OUT |= BIT1;
+
+    // Configure DIP switch pins
+    P6DIR &= ~(BIT0 | BIT1 | BIT2 | BIT3 | BIT4 | BIT5 | BIT6);
+    P7DIR &= ~BIT0;
+    P6REN |= (BIT0 | BIT1 | BIT2 | BIT3 | BIT4 | BIT5 | BIT6);
+    P7REN |= BIT0;
+    P6OUT |= (BIT0 | BIT1 | BIT2 | BIT3 | BIT4 | BIT5 | BIT6);
+    P7OUT |= BIT0;
+
+    __bis_SR_register(GIE);
+    
+    reset_diplay();
 
     while (1)
     {
-        // Main loop
-        if (update_display) {
-            updateClockDisplay();
-            update_display = false;
+        if (button_flag)
+        {
+            button_flag = 0;
+            set_time();
         }
-        
-        // You can add power-saving code here if needed
-        // __bis_SR_register(LPM0_bits + GIE);
-    }
+        else if (t_flag && set_time_stage == 0)
+        {
+            t_flag = 0;
+            update_time_string();
+            ssd1306_printText(0, 0, tiden);
+          
 
+
+        
+        }
+    }
     return 0;
 }
