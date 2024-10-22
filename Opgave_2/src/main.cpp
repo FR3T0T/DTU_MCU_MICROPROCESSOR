@@ -4,26 +4,30 @@
 #include <stdio.h>
 #include <pins_energia.h>
 
-// Global variables
+// Globale variabler
 volatile unsigned char t_flag = 0;
 volatile unsigned char button_flag = 0;
 volatile unsigned char ss = 0;
 volatile unsigned char mm = 0;
 volatile unsigned char hh = 0;
 volatile unsigned char set_time_stage = 0;
-char tiden[16];
+volatile unsigned char prev_dip_value = 0;
+char tiden[32];  // Forøget buffer størrelse for længere tekst
+char blank_line[17] = "                ";  // 16 mellemrum + null terminator
 
 // Function prototypes
 void reset_display(void);
 void update_time_string(void);
 unsigned char read_dip_switch(void);
 void set_time(void);
-void clear_time_area(void);
+void clear_display_line(unsigned char line);
+void display_setting_instructions(void);
 
-// Timer Interrupt Service Routine (ISR)
 #pragma vector = TIMER0_A0_VECTOR
 __interrupt void Timer_A(void)
 {
+    static unsigned int update_counter = 0;
+    
     if (set_time_stage == 0)
     {
         t_flag = 1;
@@ -43,89 +47,125 @@ __interrupt void Timer_A(void)
             }
         }
     }
-    __bic_SR_register_on_exit(LPM0_bits);  // Exit low-power mode
+    else 
+    {
+        // Blink effekt under indstilling
+        update_counter++;
+        if (update_counter >= 5) {  // Omkring 0.5 sekund
+            t_flag = 1;
+            update_counter = 0;
+        }
+    }
+    __bic_SR_register_on_exit(LPM0_bits);
 }
 
-// Port 2 Interrupt Service Routine (ISR) for Button Press
 #pragma vector = PORT2_VECTOR
 __interrupt void Port_2(void)
 {
     if (P2IFG & BIT1)
     {
-        __delay_cycles(100000);  // Increased debouncing delay
-        if (!(P2IN & BIT1))      // Confirm button is still pressed
+        __delay_cycles(100000);
+        if (!(P2IN & BIT1))
         {
             button_flag = 1;
-            set_time_stage++;
-            if (set_time_stage > 3)
-            {
-                set_time_stage = 1;  // Cycle back to 1
+            if (set_time_stage == 0) {
+                set_time_stage = 1;  // Start indstilling
+                display_setting_instructions();
+            }
+            else if (set_time_stage == 3) {
+                set_time_stage = 0;  // Afslut indstilling
+                ssd1306_clearDisplay();
+            }
+            else {
+                set_time_stage++;    // Næste indstilling
+                display_setting_instructions();
             }
         }
-        P2IFG &= ~BIT1;  // Clear interrupt flag
+        P2IFG &= ~BIT1;
     }
-    __bic_SR_register_on_exit(LPM0_bits);  // Exit low-power mode
+    __bic_SR_register_on_exit(LPM0_bits);
 }
 
-// Function to Reset the Display and Show Initial Time
-void reset_display(void)
+void clear_display_line(unsigned char line)
+{
+    ssd1306_setPosition(0, line);
+    ssd1306_printText(0, line, blank_line);
+}
+
+void display_setting_instructions(void)
 {
     ssd1306_clearDisplay();
-    ssd1306_setPosition(0, 0);
-    update_time_string();  // Display initial time
+    switch(set_time_stage) {
+        case 1:
+            ssd1306_printText(0, 0, "Indstil Timer:");
+            break;
+        case 2:
+            ssd1306_printText(0, 0, "Indstil Minutter:");
+            break;
+        case 3:
+            ssd1306_printText(0, 0, "Indstil Sekunder:");
+            break;
+    }
 }
 
-// Function to Update the Time String on the Display
 void update_time_string(void)
 {
-    sprintf(tiden, "%02d:%02d:%02d", hh, mm, ss);
-    ssd1306_setPosition(0, 0);
-    ssd1306_printText(0, 0, tiden);
+    if (set_time_stage == 0) {
+        sprintf(tiden, "%02d:%02d:%02d", hh, mm, ss);
+        ssd1306_printText(0, 0, tiden);
+    }
+    else {
+        // Under indstilling, vis den aktuelle værdi der ændres
+        unsigned char current_value;
+        switch(set_time_stage) {
+            case 1: current_value = hh; break;
+            case 2: current_value = mm; break;
+            case 3: current_value = ss; break;
+            default: return;
+        }
+        sprintf(tiden, "Vaerdi: %02d", current_value);
+        ssd1306_printText(0, 2, tiden);
+    }
 }
-
-// Function to Read the DIP Switch Values
+12
 unsigned char read_dip_switch(void)
 {
     unsigned char value = 0;
     value = P6IN & 0x7F;                   // Read P6.0 to P6.6
     value |= (P7IN & BIT0) ? 0x80 : 0x00;  // Read P7.0
-    return ~value;  // Invert if DIP switches are active low
+    return ~value;                          // Invert if DIP switches are active low
 }
 
-// Function to Set Time Based on DIP Switch and Stage
 void set_time(void)
 {
-    unsigned char dip_value;
-    if (set_time_stage == 0)
-    {
-        return;  // Not in time-setting mode
+    unsigned char dip_value = read_dip_switch();
+    
+    // Kun opdater hvis DIP switch værdien er ændret
+    if (dip_value != prev_dip_value) {
+        prev_dip_value = dip_value;
+        
+        switch (set_time_stage)
+        {
+            case 1:
+                hh = dip_value % 24;
+                break;
+            case 2:
+                mm = dip_value % 60;
+                break;
+            case 3:
+                ss = dip_value % 60;
+                break;
+        }
+        t_flag = 1;  // Tving en display opdatering
     }
-
-    dip_value = read_dip_switch();
-
-    switch (set_time_stage)
-    {
-        case 1:
-            hh = dip_value % 24;
-            sprintf(tiden, "Set Hour: %02d", hh);
-            break;
-
-        case 2:
-            mm = dip_value % 60;
-            sprintf(tiden, "Set Min: %02d", mm);
-            break;
-
-        case 3:
-            ss = dip_value % 60;
-            sprintf(tiden, "Set Sec: %02d", ss);
-            set_time_stage = 0;  // Reset to normal operation
-            break;
-    }
-    ssd1306_setPosition(0, 2);
-    ssd1306_printText(0, 2, tiden);
 }
 
-// Main Function
+void reset_display(void)
+{
+    ssd1306_clearDisplay();
+    update_time_string();
+}
+
 int main(void)
 {
     WDTCTL = WDTPW | WDTHOLD;  // Stop watchdog timer
@@ -142,8 +182,6 @@ int main(void)
     UCSCTL0 = 0x0000;                        // Set lowest possible DCOx, MODx
     UCSCTL1 = DCORSEL_2;                     // Select DCO range 1MHz operation
     UCSCTL2 = FLLD_1 + 31;                   // Set DCO Multiplier for 1MHz
-                                             // (N + 1) * FLLRef = Fdco
-                                             // (31 + 1) * 32768 = 1MHz
     __bic_SR_register(SCG0);                 // Enable FLL control loop
 
     // Allow time for DCO to settle
@@ -180,17 +218,22 @@ int main(void)
 
     while (1)
     {
-        if (button_flag)
-        {
-            button_flag = 0;
-            set_time();
+        if (set_time_stage > 0) {
+            set_time();  // Tjek konstant for DIP switch ændringer i indstillingstilstand
         }
-        else if (t_flag && set_time_stage == 0)
+        
+        if (t_flag)
         {
             t_flag = 0;
             update_time_string();
         }
-        __bis_SR_register(LPM0_bits + GIE);  // Enter low-power mode
+        
+        if (button_flag)
+        {
+            button_flag = 0;
+        }
+        
+        __bis_SR_register(LPM0_bits + GIE);
     }
     return 0;
 }
