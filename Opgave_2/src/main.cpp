@@ -51,7 +51,8 @@ __interrupt void Timer_A(void)
     {
         // Blink effekt under indstilling
         update_counter++;
-        if (update_counter >= 5) {  // Omkring 0.5 sekund
+        if (update_counter >= 5) // Omkring 0.5 sekund
+        {
             t_flag = 1;
             update_counter = 0;
         }
@@ -68,15 +69,18 @@ __interrupt void Port_2(void)
         if (!(P2IN & BIT1))
         {
             button_flag = 1;
-            if (set_time_stage == 0) {
+            if (set_time_stage == 0)
+            {
                 set_time_stage = 1;  // Start indstilling
                 display_setting_instructions();
             }
-            else if (set_time_stage == 3) {
+            else if (set_time_stage == 3)
+            {
                 set_time_stage = 0;  // Afslut indstilling
                 ssd1306_clearDisplay();
             }
-            else {
+            else
+            {
                 set_time_stage++;    // Næste indstilling
                 display_setting_instructions();
             }
@@ -95,7 +99,8 @@ void clear_display_line(unsigned char line)
 void display_setting_instructions(void)
 {
     ssd1306_clearDisplay();
-    switch(set_time_stage) {
+    switch(set_time_stage)
+    {
         case 1:
             ssd1306_printText(0, 0, "Indstil Timer:");
             break;
@@ -110,14 +115,17 @@ void display_setting_instructions(void)
 
 void update_time_string(void)
 {
-    if (set_time_stage == 0) {
+    if (set_time_stage == 0)
+    {
         sprintf(tiden, "%02d:%02d:%02d", hh, mm, ss);
         ssd1306_printText(0, 0, tiden);
     }
-    else {
+    else
+    {
         // Under indstilling, vis den aktuelle værdi der ændres
         unsigned char current_value;
-        switch(set_time_stage) {
+        switch(set_time_stage)
+        {
             case 1: current_value = hh; break;
             case 2: current_value = mm; break;
             case 3: current_value = ss; break;
@@ -127,7 +135,7 @@ void update_time_string(void)
         ssd1306_printText(0, 2, tiden);
     }
 }
-12
+
 unsigned char read_dip_switch(void)
 {
     unsigned char value = 0;
@@ -139,26 +147,61 @@ unsigned char read_dip_switch(void)
 void set_time(void)
 {
     unsigned char dip_value = read_dip_switch();
+    char info_msg[17];  // Buffer til informationsmeddelelse
     
     // Kun opdater hvis DIP switch værdien er ændret
-    if (dip_value != prev_dip_value) {
+    if (dip_value != prev_dip_value)
+    {
         prev_dip_value = dip_value;
         
         switch (set_time_stage)
         {
             case 1:
-                hh = dip_value % 24;
+                if (dip_value > 23)
+                {
+                    hh = 23;  // Sæt til maksimal værdi
+                    sprintf(info_msg, "Sat til max: 23");
+                    ssd1306_printText(0, 3, info_msg);
+                }
+                else
+                {
+                    hh = dip_value;
+                    clear_display_line(3);  // Ryd eventuel meddelelse
+                }
                 break;
+                
             case 2:
-                mm = dip_value % 60;
+                if (dip_value > 59)
+                {
+                    mm = 59;  // Sæt til maksimal værdi
+                    sprintf(info_msg, "Sat til max: 59");
+                    ssd1306_printText(0, 3, info_msg);
+                }
+                else
+                {
+                    mm = dip_value;
+                    clear_display_line(3);  // Ryd eventuel meddelelse
+                }
                 break;
+                
             case 3:
-                ss = dip_value % 60;
+                if (dip_value > 59)
+                {
+                    ss = 59;  // Sæt til maksimal værdi
+                    sprintf(info_msg, "Sat til max: 59");
+                    ssd1306_printText(0, 3, info_msg);
+                }
+                else
+                {
+                    ss = dip_value;
+                    clear_display_line(3);  // Ryd eventuel meddelelse
+                }
                 break;
         }
         t_flag = 1;  // Tving en display opdatering
     }
 }
+
 
 void reset_display(void)
 {
@@ -218,7 +261,8 @@ int main(void)
 
     while (1)
     {
-        if (set_time_stage > 0) {
+        if (set_time_stage > 0)
+        {
             set_time();  // Tjek konstant for DIP switch ændringer i indstillingstilstand
         }
         
