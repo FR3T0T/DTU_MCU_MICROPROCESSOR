@@ -5,7 +5,6 @@
 
 void init_ports()
 {
-    // put your setup code here, to run once:
     P6SEL = 0x00;
     P7SEL = 0;
   
@@ -13,69 +12,114 @@ void init_ports()
     digitalWrite(P1_1, HIGH);
     pinMode(P4_7, OUTPUT);
     pinMode(P1_0, OUTPUT);
-    pinMode(P2_1, INPUT_PULLUP); // Pull_up på switch til P2.1 => aktiv low
+    pinMode(P2_1, INPUT_PULLUP);
     digitalWrite(P2_1, HIGH);
-    P6DIR=0;
+    P6DIR = 0;
     P6REN |= BIT6 | BIT5 | BIT4 | BIT3 | BIT2 | BIT1 | BIT0;
     P6OUT |= BIT6 | BIT5 | BIT4 | BIT3 | BIT2 | BIT1 | BIT0;
     P7REN |= BIT0;
     P7OUT |= BIT0;
 }
 
-unsigned char Dip_switch = 0;
-char switch_value[20] = {0}; // der sættes plads af til tekstforklaring
-
-unsigned char n = 3,i=0;
-
-// for 4 Mhz SMCLK
+// For 4 MHz SMCLK
 void init_SMCLK_XT2()
 {
-    WDTCTL = WDTPW|WDTHOLD;                     // Stop watchdog timer
-    P5SEL |= BIT2+BIT3;                         // Port select XT2
-    UCSCTL6 &= ~XT2OFF;                         // Enable XT2
-    UCSCTL4 |= SELA_2;                          // ACLK=REFO,SMCLK=DCO,MCLK=DCO
-    UCSCTL4 |= SELS_5 + SELM_5;                 // SMCLK=MCLK=XT2
+    WDTCTL = WDTPW|WDTHOLD;
+    P5SEL |= BIT2+BIT3;
+    UCSCTL6 &= ~XT2OFF;
+    UCSCTL4 |= SELA_2;
+    UCSCTL4 |= SELS_5 + SELM_5;
 
-    // Loop until XT1,XT2 & DCO stabilizes - in this case loop until XT2 settles
     do
     {
-        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);     // Clear XT2,XT1,DCO fault flags
-        SFRIFG1 &= ~OFIFG;                              // Clear fault flags
+        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
+        SFRIFG1 &= ~OFIFG;
     }
-    while (SFRIFG1&OFIFG);                              // Test oscillator fault flag
+    while (SFRIFG1&OFIFG);
 }
 
 void init_pwm()
 {
-    TA1CTL|=ID_0|TASSEL_2|MC_1;     // Select  SMCLK as timer clock and up, no clock scaling
-    TA1CCTL1|= OUTMOD_3;            // Set/reset output  for P2.0  uses TA1CCR1 register for the duty cycle (TA1.1)
-    TA1CCR1 =25;                    // The comparevalue for when the output will be set /reset =>duty cycle
-    TA1CCR0=4095;                   // The top value for which the timer counter turns to decrement
-    pinMode(P2_0, OUTPUT);          // For getting the PWM signal out
-    P2SEL|=BIT0;                    // For PWM out -enable alternative function
+    // Setup Timer A1 for edge-aligned PWM
+    TA1CTL = TASSEL_2 | // SMCLK as clock source
+             MC_1 |     // Up mode
+             TACLR;     // Clear timer
+
+    TA1CCR0 = 4095;    // PWM Period (Top value)
+    TA1CCR1 = 2048;    // 50% duty cycle initially
+
+    // Setup PWM output mode
+    TA1CCTL1 = OUTMOD_7;  // Reset/Set mode
+    
+    // Enable PWM output on P2.0
+    pinMode(P2_0, OUTPUT);
+    P2SEL |= BIT0;
+}
+
+void update_duty_cycle(uint8_t dip_value)
+{
+    uint16_t scaled_value = dip_value * 16;
+    if(scaled_value > TA1CCR0)
+        scaled_value = TA1CCR0;
+    TA1CCR1 = scaled_value;
+}
+
+uint8_t calculate_duty_cycle()
+{
+    return (uint8_t)((((uint32_t)TA1CCR1 * 100) / TA1CCR0));
 }
 
 int main()
 {
-    WDTCTL = WDTPW | WDTHOLD;   // Always disable watch for using delay function
-    init_SMCLK_XT2();           // Select the 4 MHz clock for SMCLK
+    WDTCTL = WDTPW | WDTHOLD;
+    init_SMCLK_XT2();
     init_ports();
     init_pwm();
  
     i2c_init();
     ssd1306_init();
     reset_diplay();
-    ssd1306_printText(0, 0, "hej med dig/0");
-    ssd1306_clearDisplay();
+    ssd1306_clearDisplay();  // Kun clear én gang ved start
+    
+    char display_text[32];
+    uint8_t duty_cycle;
+    uint8_t prev_dip_value = 0;
+    uint8_t prev_duty_cycle = 0;
+
+    // Initial display setup
+    ssd1306_printText(0, 0, "DIP:");
+    ssd1306_printText(0, 2, "CCR1:");
+    ssd1306_printText(0, 4, "Duty:");
 
     while(1)
     {
-        n = (P6IN&0x7F);                                // & (BIT6 | BIT5 | BIT4 | BIT3 | BIT2 | BIT1 | BIT0)); ////digitalRead(P6_0)+digitalRead(P6_1)+digitalRead(P6_2)+digitalRead(P6_3)+digitalRead(P6_4)+digitalRead(P6_5)+digitalRead(P6_6);//+digitalRead(P7_0)<<8;
-        n=n + ((P7IN&BIT0)<<7);                         // Shift 7 times for biton msb place
-        sprintf(switch_value, "switch er: %03d\0", n);
-        ssd1306_printText(0, 0, switch_value);
-        ssd1306_printUI32(0,5,TA1CCR1,0);               // Write the contents of the compareregister setting the duty cycle
- 
-        __delay_cycles(100000);
+        // Read DIP switches
+        uint8_t dip_value = (P6IN & 0x7F) | ((P7IN & BIT0) << 7);
+        
+        // Kun opdater hvis værdien har ændret sig
+        if(dip_value != prev_dip_value)
+        {
+            update_duty_cycle(dip_value);
+            duty_cycle = calculate_duty_cycle();
+            
+            // Opdater kun de specifikke værdier der vises
+            sprintf(display_text, "%d   ", dip_value);  // Ekstra spaces for at overskrive gamle tal
+            ssd1306_printText(40, 0, display_text);
+            
+            sprintf(display_text, "%d   ", TA1CCR1);
+            ssd1306_printText(40, 2, display_text);
+            
+            sprintf(display_text, "%d%%   ", duty_cycle);
+            ssd1306_printText(40, 4, display_text);
+            
+            prev_dip_value = dip_value;
+            prev_duty_cycle = duty_cycle;
+        }
+        
+        // Wait for CCR1 match
+        while(!(TA1CCTL1 & CCIFG));
+        TA1CCTL1 &= ~CCIFG;  // Clear the flag
+        
+        __delay_cycles(50000);  // Reduceret delay for bedre respons
     }
 }
