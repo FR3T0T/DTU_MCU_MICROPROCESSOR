@@ -3,6 +3,13 @@
 #include "i2c.h"
 #include "ssd1306.h"
 
+// Konstanter for PWM og filter beregninger
+#define PWM_FREQ 976.56f        // Hz (4MHz / 4095)
+#define FILTER_RATIO 75         // Ønsket forhold mellem PWM og filter frekvens
+#define CUTOFF_FREQ 13.0f      // Hz (PWM_FREQ / FILTER_RATIO)
+// For et 13 Hz filter med C = 1µF:
+// R = 1/(2*pi*f*C) = 1/(2*3.14159*13*0.000001) ≈ 12.2kΩ
+
 void init_ports()
 {
     P6SEL = 0x00;
@@ -21,7 +28,6 @@ void init_ports()
     P7OUT |= BIT0;
 }
 
-// For 4 MHz SMCLK
 void init_SMCLK_XT2()
 {
     WDTCTL = WDTPW|WDTHOLD;
@@ -46,7 +52,7 @@ void init_pwm()
              TACLR;     // Clear timer
 
     TA1CCR0 = 4095;    // PWM Period (Top value)
-    TA1CCR1 = 2048;    // 50% duty cycle initially
+    TA1CCR1 = 2048;    // Initial 50% duty cycle
 
     // Setup PWM output mode
     TA1CCTL1 = OUTMOD_7;  // Reset/Set mode
@@ -58,15 +64,26 @@ void init_pwm()
 
 void update_duty_cycle(uint8_t dip_value)
 {
-    uint16_t scaled_value = dip_value * 16;
-    if(scaled_value > TA1CCR0)
-        scaled_value = TA1CCR0;
-    TA1CCR1 = scaled_value;
+    // Skaler DIP switch værdi (0-255) til at være mellem 10% og 90% af TA1CCR0
+    uint32_t min_duty = (TA1CCR0 * 10) / 100;  // 10% af TA1CCR0
+    uint32_t max_duty = (TA1CCR0 * 90) / 100;  // 90% af TA1CCR0
+    uint32_t duty_range = max_duty - min_duty;
+    
+    // Beregn skaleret værdi mellem min og max duty
+    uint32_t scaled_value = min_duty + ((duty_range * dip_value) / 255);
+    
+    TA1CCR1 = (uint16_t)scaled_value;
 }
 
 uint8_t calculate_duty_cycle()
 {
     return (uint8_t)((((uint32_t)TA1CCR1 * 100) / TA1CCR0));
+}
+
+float calculate_output_voltage(uint8_t duty_cycle)
+{
+    // Antager 3.3V forsyningsspænding
+    return (3.3f * duty_cycle) / 100.0f;
 }
 
 int main()
@@ -88,8 +105,8 @@ int main()
 
     // Initial display setup
     ssd1306_printText(0, 0, "DIP:");
-    ssd1306_printText(0, 2, "CCR1:");
-    ssd1306_printText(0, 4, "Duty:");
+    ssd1306_printText(0, 2, "Duty:");
+    ssd1306_printText(0, 4, "CCR1:");
 
     while(1)
     {
@@ -106,10 +123,10 @@ int main()
             sprintf(display_text, "%d   ", dip_value);  // Ekstra spaces for at overskrive gamle tal
             ssd1306_printText(40, 0, display_text);
             
-            sprintf(display_text, "%d   ", TA1CCR1);
+            sprintf(display_text, "%d%%   ", duty_cycle);
             ssd1306_printText(40, 2, display_text);
             
-            sprintf(display_text, "%d%%   ", duty_cycle);
+            sprintf(display_text, "%d   ", TA1CCR1);
             ssd1306_printText(40, 4, display_text);
             
             prev_dip_value = dip_value;
