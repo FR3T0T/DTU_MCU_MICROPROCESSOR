@@ -64,14 +64,19 @@ void init_pwm()
 
 void update_duty_cycle(uint8_t dip_value)
 {
-    // Skaler DIP switch værdi (0-255) til at være mellem 10% og 90% af TA1CCR0
-    uint32_t min_duty = (TA1CCR0 * 10) / 100;  // 10% af TA1CCR0
-    uint32_t max_duty = (TA1CCR0 * 90) / 100;  // 90% af TA1CCR0
-    uint32_t duty_range = max_duty - min_duty;
+    // Beregn minimum og maximum duty cycle værdier (10% og 90% af TA1CCR0)
+    uint16_t min_duty = (TA1CCR0 * 10) / 100;    // 10% af 4095 ≈ 409
+    uint16_t max_duty = (TA1CCR0 * 90) / 100;    // 90% af 4095 ≈ 3685
     
-    // Beregn skaleret værdi mellem min og max duty
-    uint32_t scaled_value = min_duty + ((duty_range * dip_value) / 255);
+    // Linear mapping fra DIP switch (0-255) til duty cycle range (min_duty til max_duty)
+    uint32_t scaled_value = min_duty + (((uint32_t)(max_duty - min_duty) * dip_value) / 255);
     
+    // Sikre at værdien er inden for grænserne
+    if(scaled_value > max_duty) 
+        scaled_value = max_duty;
+    if(scaled_value < min_duty) 
+        scaled_value = min_duty;
+        
     TA1CCR1 = (uint16_t)scaled_value;
 }
 
