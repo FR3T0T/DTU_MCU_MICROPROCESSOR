@@ -130,7 +130,10 @@ void init_pwm()
 // Opdaterer PWM duty cycle baseret på DIP switch input
 void update_duty_cycle(uint8_t dip_value)
 {
-    TA1CCR1 = dip_value << 4;       // Map 8-bit til 12-bit (gang med 16)
+    // Præcis skalering fra 8-bit til 12-bit
+    // 4095/255 = 16.0588... hvilket giver mere præcis duty cycle
+    uint32_t scaled_value = ((uint32_t)dip_value * 4095) / 255;
+    TA1CCR1 = (uint16_t)scaled_value;
 }
 
 // Beregner aktuel duty cycle i procent
