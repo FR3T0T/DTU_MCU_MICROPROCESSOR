@@ -3,13 +3,6 @@
 #include "i2c.h"
 #include "ssd1306.h"
 
-// Konstanter for PWM og filter beregninger
-#define PWM_FREQ 976.56f        // Hz (4MHz / 4095)
-#define FILTER_RATIO 75         // Ønsket forhold mellem PWM og filter frekvens
-#define CUTOFF_FREQ 13.0f      // Hz (PWM_FREQ / FILTER_RATIO)
-// For et 13 Hz filter med C = 1µF:
-// R = 1/(2*pi*f*C) = 1/(2*3.14159*13*0.000001) ≈ 12.2kΩ
-
 void init_ports()
 {
     P6SEL = 0x00;
@@ -64,31 +57,13 @@ void init_pwm()
 
 void update_duty_cycle(uint8_t dip_value)
 {
-    // Beregn minimum og maximum duty cycle værdier (10% og 90% af TA1CCR0)
-    uint16_t min_duty = (TA1CCR0 * 10) / 100;    // 10% af 4095 ≈ 409
-    uint16_t max_duty = (TA1CCR0 * 90) / 100;    // 90% af 4095 ≈ 3685
-    
-    // Linear mapping fra DIP switch (0-255) til duty cycle range (min_duty til max_duty)
-    uint32_t scaled_value = min_duty + (((uint32_t)(max_duty - min_duty) * dip_value) / 255);
-    
-    // Sikre at værdien er inden for grænserne
-    if(scaled_value > max_duty) 
-        scaled_value = max_duty;
-    if(scaled_value < min_duty) 
-        scaled_value = min_duty;
-        
-    TA1CCR1 = (uint16_t)scaled_value;
+    // Simply multiply by 16 to map 8-bit to 12-bit range
+    TA1CCR1 = dip_value << 4;  // Same as dip_value * 16
 }
 
 uint8_t calculate_duty_cycle()
 {
     return (uint8_t)((((uint32_t)TA1CCR1 * 100) / TA1CCR0));
-}
-
-float calculate_output_voltage(uint8_t duty_cycle)
-{
-    // Antager 3.3V forsyningsspænding
-    return (3.3f * duty_cycle) / 100.0f;
 }
 
 int main()
@@ -101,7 +76,7 @@ int main()
     i2c_init();
     ssd1306_init();
     reset_diplay();
-    ssd1306_clearDisplay();  // Kun clear én gang ved start
+    ssd1306_clearDisplay();
     
     char display_text[32];
     uint8_t duty_cycle;
