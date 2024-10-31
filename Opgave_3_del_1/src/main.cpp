@@ -3,6 +3,18 @@
 #include "i2c.h"
 #include "ssd1306.h"
 
+// Konstanter for PWM og filter beregninger
+#define SMCLK_FREQ      4000000.0f  // 4 MHz
+#define TA1CCR0_VALUE   4095        // Timer A1 periode
+#define PWM_FREQ        (SMCLK_FREQ / TA1CCR0_VALUE)  // ≈ 976.56 Hz
+#define FILTER_RATIO    75          // Forhold mellem PWM og filter frekvens
+#define CUTOFF_FREQ     (PWM_FREQ / FILTER_RATIO)     // ≈ 13 Hz
+
+// RC Filter komponenter
+// For et 13 Hz filter med C = 1µF:
+// R = 1/(2*pi*f*C) = 1/(2*3.14159*13*0.000001) ≈ 12.2kΩ
+// Brug nærmeste standard modstandsværdi: 12kΩ
+
 void init_ports()
 {
     P6SEL = 0x00;
@@ -40,30 +52,41 @@ void init_SMCLK_XT2()
 void init_pwm()
 {
     // Setup Timer A1 for edge-aligned PWM
-    TA1CTL = TASSEL_2 | // SMCLK as clock source
+    TA1CTL = TASSEL_2 | // SMCLK as clock source (4 MHz)
              MC_1 |     // Up mode
              TACLR;     // Clear timer
 
-    TA1CCR0 = 4095;    // PWM Period (Top value)
-    TA1CCR1 = 2048;    // Initial 50% duty cycle
+    TA1CCR0 = TA1CCR0_VALUE;  // PWM Period (giver ≈976.56 Hz PWM frekvens)
+    TA1CCR1 = TA1CCR0_VALUE/2;  // Initial 50% duty cycle
 
     // Setup PWM output mode
     TA1CCTL1 = OUTMOD_7;  // Reset/Set mode
     
-    // Enable PWM output on P2.0
+    // Enable PWM output on P2.0 (forbind RC filter her)
+    // RC filter komponenter:
+    // R = 12kΩ
+    // C = 1µF
+    // Forventet cutoff frekvens ≈ 13 Hz
     pinMode(P2_0, OUTPUT);
     P2SEL |= BIT0;
 }
 
 void update_duty_cycle(uint8_t dip_value)
 {
-    // Simply multiply by 16 to map 8-bit to 12-bit range
-    TA1CCR1 = dip_value << 4;  // Same as dip_value * 16
+    // Map 8-bit DIP value (0-255) til 12-bit timer værdi (0-4080)
+    // Ved at gange med 16 (skifte 4 bit til venstre)
+    TA1CCR1 = dip_value << 4;
 }
 
 uint8_t calculate_duty_cycle()
 {
-    return (uint8_t)((((uint32_t)TA1CCR1 * 100) / TA1CCR0));
+    return (uint8_t)((((uint32_t)TA1CCR1 * 100) / TA1CCR0_VALUE));
+}
+
+uint16_t calculate_voltage_mv(uint8_t duty_cycle)
+{
+    // Beregn spænding i millivolt (3300mV * duty_cycle / 100)
+    return (3300 * duty_cycle) / 100;
 }
 
 int main()
@@ -87,6 +110,7 @@ int main()
     ssd1306_printText(0, 0, "DIP:");
     ssd1306_printText(0, 2, "Duty:");
     ssd1306_printText(0, 4, "CCR1:");
+    ssd1306_printText(0, 6, "DC V:");
 
     while(1)
     {
@@ -99,8 +123,8 @@ int main()
             update_duty_cycle(dip_value);
             duty_cycle = calculate_duty_cycle();
             
-            // Opdater kun de specifikke værdier der vises
-            sprintf(display_text, "%d   ", dip_value);  // Ekstra spaces for at overskrive gamle tal
+            // Opdater display værdier
+            sprintf(display_text, "%d   ", dip_value);
             ssd1306_printText(40, 0, display_text);
             
             sprintf(display_text, "%d%%   ", duty_cycle);
@@ -108,6 +132,13 @@ int main()
             
             sprintf(display_text, "%d   ", TA1CCR1);
             ssd1306_printText(40, 4, display_text);
+            
+            // Beregn og vis spænding i Volt format
+            uint16_t voltage_mv = calculate_voltage_mv(duty_cycle);
+            uint16_t volts = voltage_mv / 1000;
+            uint16_t mv = voltage_mv % 1000;
+            sprintf(display_text, "%d.%02dV  ", volts, mv/10);
+            ssd1306_printText(40, 6, display_text);
             
             prev_dip_value = dip_value;
             prev_duty_cycle = duty_cycle;
