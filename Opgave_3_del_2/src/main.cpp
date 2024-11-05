@@ -1,87 +1,86 @@
-#include <Arduino.h>
-#include <Energia.h>
+#include <msp430.h>
 #include <stdint.h>
 #include "i2c.h"
 #include "ssd1306.h"
 
-void init_ADC(void) {
-    // Reset og konfigurer ADC12
-    ADC12CTL0 &= ~ADC12ENC;                   // Disable ADC12
+// Definer konstanter globalt
+#define VFS 3.3f
+#define ADC_BITS 12
+#define ADC_MAX_VALUE (1 << ADC_BITS)
 
-    // Konfigurer ADC12
-    ADC12CTL0 = ADC12SHT02 |                  // Sample time
-                ADC12ON;                       // Turn on ADC12
+void init_ADC(void) {
+    // Disable ADC12 for configuration
+    ADC12CTL0 &= ~ADC12ENC;
     
-    ADC12CTL1 = ADC12SHP |                    // Sample timer
-                ADC12SSEL_0;                   // ADC12 clock source
+    // Configure ADC12
+    ADC12CTL0 = ADC12SHT0_3 |    // 32 ADC12CLK cycles sample time
+                ADC12ON;          // Turn on ADC12
     
-    ADC12CTL2 = ADC12RES_2;                   // 12-bit resolution
+    ADC12CTL1 = ADC12SHP |       // Use sampling timer
+                ADC12SSEL_0;      // ADC12CLK source
     
-    ADC12MCTL0 = ADC12INCH_12 |               // Input A12 (P7.0)
-                 ADC12SREF_0;                  // VR+ = AVCC and VR- = AVSS
+    ADC12CTL2 = ADC12RES_2;      // 12-bit resolution
     
-    // Konfigurer P7.0 som analog input
-    P7SEL |= BIT0;                            // Select analog function for P7.0
+    ADC12MCTL0 = ADC12INCH_12 |  // Input channel A12 (P7.0)
+                 ADC12SREF_0;     // VR+ = AVCC, VR- = AVSS
+    
+    // Configure P7.0 as analog input
+    P7SEL |= BIT0;               // For MSP430F5529, use P7SEL
+    
+    // Enable ADC12
+    ADC12CTL0 |= ADC12ENC;
 }
 
 uint16_t get_sample(void) {
-    uint16_t result;
+    // Start conversion
+    ADC12CTL0 |= ADC12SC;
     
-    ADC12CTL0 |= ADC12ENC | ADC12SC;          // Start sampling/conversion
-    
-    // Vent på konvertering er færdig
+    // Wait for conversion to complete
     while (!(ADC12IFG & BIT0));
     
-    result = ADC12MEM0;                        // Læs resultat
-    
-    return result;
+    return ADC12MEM0;
 }
 
-void delay_ms(uint32_t ms) {
-    delay(ms);  // Brug Energia's delay funktion
-}
-void setup(){
-    
-}
-void init1() {
+int main(void) {
     // Stop watchdog timer
     WDTCTL = WDTPW | WDTHOLD;
     
-    // Initialiser I2C
+    // Initialize I2C
     i2c_init();
     
-    // Initialiser OLED display
+    // Initialize OLED display
     ssd1306_init();
     ssd1306_clearDisplay();
     
-    // Initialiser ADC
+    // Initialize ADC
     init_ADC();
     
-    // Print header text
-    ssd1306_printText(0, 0, "ADC Value:");
-}
-
-int main() {
-    init1();
-
-    while(1){
-    uint16_t adc_value = get_sample();
+    while(1) {
+        // Get ADC sample
+        uint16_t adc_value = get_sample();
+        
+        // Calculate actual voltage
+        float Vin = (adc_value * VFS) / ADC_MAX_VALUE;
+        
+        // Calculate theoretical NADC
+        uint32_t NADC_calc = (uint32_t)((ADC_MAX_VALUE * Vin) / VFS);
+        
+        // Display measured ADC value
+        ssd1306_printText(0, 0, "ADC Value:");
+        ssd1306_printUI32(0, 1, adc_value, 0);
+        
+        // Display theoretical NADC
+        ssd1306_printText(0, 3, "Calc NADC:");
+        ssd1306_printUI32(0, 4, NADC_calc, 0);
+        
+        // Display voltage in mV
+        uint32_t voltage_mv = (uint32_t)(Vin * 1000.0f);
+        ssd1306_printText(0, 6, "Voltage (mV):");
+        ssd1306_printUI32(0, 7, voltage_mv, 0);
+        
+        // Delay mellem målinger (ca. 1 sekund)
+        __delay_cycles(50000);
+    }
     
-    // Vis ADC værdi på OLED (linje 2)
-    ssd1306_printUI32(0, 2, adc_value, 0);
-    
-    // Beregn spænding (Vin = (NADC * VFS) / 2^N)
-    // VFS = 3.3V, N = 12
-    float voltage = (adc_value * 3.3f) / 4096.0f;
-    
-    // Konverter til millivolt for visning
-    uint32_t voltage_mv = (uint32_t)(voltage * 1000);
-    
-    // Vis spænding på linje 4
-    ssd1306_printText(0, 4, "Voltage (mV):");
-    ssd1306_printUI32(0, 6, voltage_mv, 0);
-    
-    __delay_cycles(1000000);  // Opdater hver 100ms
-
-}
+    return 0;
 }
