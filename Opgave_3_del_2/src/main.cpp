@@ -1,16 +1,16 @@
 /*******************************************************************************
-* DEL 1
-* PWM Generator med DIP Switch Kontrol og OLED Display
+* DEL 2
+* ADC12 PWM Generator med Potentiometer Kontrol og OLED Display
 *
 * Dette program implementerer en PWM generator med følgende funktioner:
 * - PWM output på P2.0 med frekvens omkring 1 kHz
-* - Duty cycle styres via 8-bit DIP switch
-* - OLED display viser aktuelle værdier
+* - Duty cycle styres via 10kΩ potentiometer på P7.0 (A12)
+* - OLED display viser ADC værdier og beregnede spændinger
 * - RC lavpasfilter kan tilsluttes for DC konvertering
 *
 * Hardware krav:
 * - MSP430F5529 LaunchPad
-* - 8-bit DIP switch på P6.0-P6.6 og P7.0
+* - 10kΩ potentiometer tilsluttet P7.0 (A12)
 * - OLED display tilsluttet via I2C
 * - RC lavpasfilter (12kΩ og 1µF) kan tilsluttes P2.0
 *
@@ -25,40 +25,17 @@
 /****************************************************************************
 * Konstanter og Definitioner
 ****************************************************************************/
-// System Clock og Timer Konstanter
 #define SMCLK_FREQ      4000000.0f    // System clock frekvens (4 MHz)
 #define TA1CCR0_VALUE   4095          // Timer A1 periode (12-bit opløsning)
-
-// PWM og Filter Beregninger
 #define PWM_FREQ        (SMCLK_FREQ / TA1CCR0_VALUE)  // ≈ 976.56 Hz
-#define FILTER_RATIO    75            // Forhold mellem PWM og filter frekvens
-#define CUTOFF_FREQ     (PWM_FREQ / FILTER_RATIO)     // ≈ 13 Hz
-
-/*
-* RC Filter Design Notes:
-* - Ønsket cutoff frekvens: 13 Hz
-* - Valgt kapacitor: C = 1µF
-* - Beregnet modstand: R = 1/(2π * f * C) = 1/(2 * 3.14159 * 13 * 0.000001) ≈ 12.2kΩ
-* - Bruger standard værdi: R = 12kΩ
-* 
-* Dette giver en faktisk cutoff frekvens på ca. 13.3 Hz
-*/
+#define VFS             3.3f          // Reference spænding for ADC (3.3V)
+#define ADC_BITS        12            // ADC opløsning (12-bit)
 
 /****************************************************************************
 * Port Initialisering
-* 
-* Konfigurerer alle nødvendige porte for:
-* - DIP switch input med pull-up modstande
-* - PWM output
-* - I2C kommunikation
-* - Generelle I/O
 ****************************************************************************/
 void init_ports()
 {
-    // Port Select Konfiguration
-    P6SEL = 0x00;      // Port 6 som digital I/O
-    P7SEL = 0;         // Port 7 som digital I/O
-  
     // I2C Pin Setup
     pinMode(P1_1, INPUT_PULLUP);    // SDA med pull-up
     digitalWrite(P1_1, HIGH);
@@ -69,21 +46,62 @@ void init_ports()
     pinMode(P2_1, INPUT_PULLUP);    // Reserve input
     digitalWrite(P2_1, HIGH);
     
-    // DIP Switch Konfiguration (P6.0-P6.6)
-    P6DIR = 0;                      // Alle P6 pins som input
-    P6REN |= 0x7F;                 // Enable pull-up/down for P6.0-P6.6
-    P6OUT |= 0x7F;                 // Vælg pull-up
+    // ADC Input Setup (P7.0/A12)
+    P7SEL |= BIT0;                  // Analog funktion for P7.0
+    P7DIR &= ~BIT0;                 // Input
+    P7REN |= BIT0;                  // Enable pull-down modstand
+    P7OUT &= ~BIT0;                 // Vælg pull-down
+}
+
+/****************************************************************************
+* ADC12 Initialisering
+****************************************************************************/
+void init_adc()
+{
+    ADC12CTL0 &= ~ADC12ENC;           // Disable ADC12 før konfiguration
     
-    // MSB DIP Switch (P7.0)
-    P7REN |= BIT0;                 // Enable pull-up/down
-    P7OUT |= BIT0;                 // Vælg pull-up
+    // Nulstil alle ADC12 kontrolregistre
+    ADC12CTL0 = 0;
+    ADC12CTL1 = 0;
+    ADC12CTL2 = 0;
+    
+    // Konfigurer ADC12
+    ADC12CTL0 = ADC12ON |             // Tænd ADC12
+                ADC12SHT0_8 |         // Længere sample tid (256 cycles)
+                ADC12MSC;             // Multiple sample/conversion
+                
+    ADC12CTL1 = ADC12SHP |            // Sample timer
+                ADC12SSEL_0 |         // ADC12OSC clock
+                ADC12DIV_7 |          // Clock divider /8
+                ADC12CONSEQ_0;        // Single channel mode
+                
+    ADC12CTL2 = ADC12RES_2 |          // 12-bit opløsning
+                ADC12TCOFF;           // Temperatur sensor off
+    
+    // Input kanal A12 (P7.0)
+    ADC12MCTL0 = ADC12INCH_12 |       // Channel A12
+                 ADC12SREF_0;         // AVCC reference
+    
+    // Lad ADC stabilisere sig
+    __delay_cycles(1000);
+    
+    ADC12CTL0 |= ADC12ENC;            // Enable ADC
+}
+
+/****************************************************************************
+* ADC12 Sample Funktion
+****************************************************************************/
+uint16_t get_adc_sample()
+{
+    ADC12CTL0 |= ADC12ENC | ADC12SC;  // Start sampling/conversion
+    
+    while (!(ADC12IFG & BIT0));       // Vent på konvertering
+    
+    return ADC12MEM0;                 // Returner resultat
 }
 
 /****************************************************************************
 * System Clock Initialisering
-* 
-* Konfigurerer XT2 høj-frekvens oscillator til 4 MHz
-* Bruges som kilde for SMCLK (subsystem master clock)
 ****************************************************************************/
 void init_SMCLK_XT2()
 {
@@ -94,7 +112,6 @@ void init_SMCLK_XT2()
     UCSCTL4 |= SELA_2;              // ACLK fra REFO
     UCSCTL4 |= SELS_5 + SELM_5;     // SMCLK og MCLK fra XT2
     
-    // Oscillator fejl check loop
     do {
         UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
         SFRIFG1 &= ~OFIFG;
@@ -103,11 +120,6 @@ void init_SMCLK_XT2()
 
 /****************************************************************************
 * PWM Initialisering
-* 
-* Konfigurerer Timer A1 til PWM generation:
-* - Frekvens: ~976.56 Hz (4MHz/4095)
-* - Resolution: 12-bit (0-4095)
-* - Output: P2.0
 ****************************************************************************/
 void init_pwm()
 {
@@ -125,27 +137,18 @@ void init_pwm()
 }
 
 /****************************************************************************
-* Duty Cycle Administration
+* ADC til PWM Konvertering
 ****************************************************************************/
-// Opdaterer PWM duty cycle baseret på DIP switch input
-void update_duty_cycle(uint8_t dip_value)
+void update_pwm_from_adc(uint16_t adc_value)
 {
-    // Præcis skalering fra 8-bit til 12-bit
-    // 4095/255 = 16.0588... hvilket giver mere præcis duty cycle
-    uint32_t scaled_value = ((uint32_t)dip_value * 4095) / 255;
-    TA1CCR1 = (uint16_t)scaled_value;
+    // Direkte mapping fra 12-bit ADC til 12-bit PWM
+    TA1CCR1 = adc_value;
 }
 
-// Beregner aktuel duty cycle i procent
-uint8_t calculate_duty_cycle()
+// Beregn teoretisk NADC værdi
+uint16_t calculate_theoretical_NADC(float Vin)
 {
-    return (uint8_t)((((uint32_t)TA1CCR1 * 100) / TA1CCR0_VALUE));
-}
-
-// Beregner forventet output spænding i millivolt
-uint16_t calculate_voltage_mv(uint8_t duty_cycle)
-{
-    return (3300 * duty_cycle) / 100;  // 3.3V = 3300mV
+    return (uint16_t)((pow(2, ADC_BITS) * Vin) / VFS);
 }
 
 /****************************************************************************
@@ -158,6 +161,7 @@ int main()
     init_SMCLK_XT2();               // Setup 4 MHz clock
     init_ports();                    // Konfigurer porte
     init_pwm();                      // Setup PWM
+    init_adc();                      // Setup ADC12
  
     /* Display initialisering */
     i2c_init();
@@ -165,61 +169,49 @@ int main()
     reset_diplay();
     ssd1306_clearDisplay();
     
-    /* Variable deklarationer */
-    char display_text[32];          // Display text buffer
-    uint8_t duty_cycle;             // Aktuel duty cycle
-    uint8_t prev_dip_value = 0;     // For ændring detektion
-    uint8_t prev_duty_cycle = 0;    // For ændring detektion
-
     /* Display layout setup */
-    ssd1306_printText(0, 0, "DIP:");    // DIP switch værdi
-    ssd1306_printText(0, 2, "Duty:");   // Duty cycle procent
-    ssd1306_printText(0, 4, "CCR1:");   // Timer værdi
-    ssd1306_printText(0, 6, "DC V:");   // Beregnet spænding
+    ssd1306_printText(0, 0, "ADC Val:");     // Rå ADC værdi
+    ssd1306_printText(0, 2, "Volt In:");     // Målt spænding
+    ssd1306_printText(0, 4, "Theo N:");      // Teoretisk NADC
+    ssd1306_printText(0, 6, "PWM DC:");      // PWM duty cycle
 
     /* Hovedløkke */
     while(1)
     {
-        // Læs og inverter DIP switch status
-        uint8_t dip_value = ~((P6IN & 0x7F) | ((P7IN & BIT0) << 7));
-        dip_value &= 0xFF;  // Mask til 8-bit
+        // Læs ADC værdi
+        uint16_t adc_value = get_adc_sample();
         
-        // Kun opdater ved ændringer
-        if(dip_value != prev_dip_value)
-        {
-            // Opdater PWM og beregn nye værdier
-            update_duty_cycle(dip_value);
-            duty_cycle = calculate_duty_cycle();
-            
-            /* Opdater display */
-            // DIP værdi
-            sprintf(display_text, "%d   ", dip_value);
-            ssd1306_printText(40, 0, display_text);
-            
-            // Duty cycle
-            sprintf(display_text, "%d%%   ", duty_cycle);
-            ssd1306_printText(40, 2, display_text);
-            
-            // Timer værdi
-            sprintf(display_text, "%d   ", TA1CCR1);
-            ssd1306_printText(40, 4, display_text);
-            
-            // Beregnet spænding
-            uint16_t voltage_mv = calculate_voltage_mv(duty_cycle);
-            uint16_t volts = voltage_mv / 1000;
-            uint16_t mv = voltage_mv % 1000;
-            sprintf(display_text, "%d.%02dV  ", volts, mv/10);
-            ssd1306_printText(40, 6, display_text);
-            
-            // Gem værdier til næste iteration
-            prev_dip_value = dip_value;
-            prev_duty_cycle = duty_cycle;
-        }
+        // Beregn input spænding (V)
+        float voltage = (adc_value * VFS) / (float)(1 << ADC_BITS);
         
-        // Synkroniser med PWM timer
-        while(!(TA1CCTL1 & CCIFG));    // Vent på CCR1 match
-        TA1CCTL1 &= ~CCIFG;            // Clear flag
+        // Beregn teoretisk NADC
+        uint16_t theo_nadc = calculate_theoretical_NADC(voltage);
         
-        __delay_cycles(50000);          // Delay for stabil operation
+        // Beregn duty cycle procent
+        uint8_t duty_cycle = (adc_value * 100) / TA1CCR0_VALUE;
+        
+        // Opdater PWM
+        update_pwm_from_adc(adc_value);
+        
+        /* Opdater display */
+        // ADC værdi
+        ssd1306_printUI32(64, 0, adc_value, 0);
+        
+        // Spænding (med 3 decimaler)
+        char volt_str[16];
+        sprintf(volt_str, "%d.%03dV", (int)voltage, 
+                (int)((voltage - (int)voltage) * 1000));
+        ssd1306_printText(64, 2, volt_str);
+        
+        // Teoretisk NADC
+        ssd1306_printUI32(64, 4, theo_nadc, 0);
+        
+        // PWM duty cycle
+        char duty_str[16];
+        sprintf(duty_str, "%d%%", duty_cycle);
+        ssd1306_printText(64, 6, duty_str);
+        
+        // Delay for stabil operation
+        __delay_cycles(50000);
     }
 }
