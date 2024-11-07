@@ -45,6 +45,7 @@
                            // Større værdi = mere udglatning
 #define ADC_THRESHOLD 3     // Minimum ændring før display update
                            // Reducerer display flimmer
+#define TA1CCR0_VALUE 4095    // PWM periode (12-bit)
 
 /****************************************************************************
 * Display Layout Konfiguration
@@ -165,29 +166,52 @@ void adc_init(void)
     ADC12CTL0 |= ADC12ENC;             // Enable konvertering
 }
 
-// Timer System Initialisering
+/****************************************************************************
+* Nye PWM og Duty Cycle Funktioner
+****************************************************************************/
+// Opdaterer PWM duty cycle baseret på ADC værdi
+void update_duty_cycle(uint16_t adc_value)
+{
+    // Direkte mapping da både ADC og PWM er 12-bit
+    TA1CCR1 = adc_value;
+}
+
+// Beregner aktuel duty cycle i procent
+uint8_t calculate_duty_cycle(void)
+{
+    return (uint8_t)((((uint32_t)TA1CCR1 * 100) / TA1CCR0_VALUE));
+}
+
+// Beregner forventet output spænding i millivolt
+uint16_t calculate_voltage_mv(uint8_t duty_cycle)
+{
+    return (3300 * duty_cycle) / 100;  // 3.3V = 3300mV
+}
+
 void timer_init(void)
 {
-    // Timer A0 Konfiguration (ADC Trigger)
-    TA0CTL = TASSEL_2                  // SMCLK som clock kilde
-           | MC_1                      // Up mode
-           | TACLR;                    // Clear timer
-           
-    TA0CCR0 = 3999;                    // Periode for ADC sampling
-    TA0CCTL0 = CCIE;                   // Enable capture/compare interrupt
+    // Timer A0 Konfiguration (ADC Trigger) - behold som er
+    TA0CTL = TASSEL_2 | MC_1 | TACLR;  // SMCLK, Up mode, clear timer
+    TA0CCR0 = 3999;                     // Set period
+    TA0CCTL0 = CCIE;                    // Enable interrupt
 
     // Timer A1 Konfiguration (PWM Generator)
-    TA1CTL = TASSEL_2                  // SMCLK som clock kilde
-           | MC_1                      // Up mode
-           | TACLR;                    // Clear timer
-           
-    TA1CCR0 = 4095;                    // PWM periode (12-bit)
+    TA1CTL = MC_0;                      // Stop timer først
+    
+    // PWM Setup
+    TA1CCR0 = TA1CCR0_VALUE;           // PWM periode (12-bit)
     TA1CCTL1 = OUTMOD_7;               // Reset/Set PWM mode
     TA1CCR1 = 0;                       // Start med 0% duty cycle
     
-    // PWM Output Setup
+    // Start timer
+    TA1CTL = TASSEL_2                  // SMCLK som clock kilde
+           | MC_1                      // Up mode
+           | TACLR;                    // Clear timer
+    
+    // PWM Output Setup - Updated for MSP430F5529
     P2DIR |= BIT0;                     // P2.0 som output
-    P2SEL |= BIT0;                     // P2.0 til PWM funktion
+    P2SEL |= BIT0;                     // P2.0 til PWM funktion (TA1.1)
+    P2OUT &= ~BIT0;                    // Start lav
 }
 
 /****************************************************************************
@@ -335,7 +359,7 @@ void init_setup(void)
 }
 
 /****************************************************************************
-* Hovedprogram
+* Opdateret Main Loop
 ****************************************************************************/
 int main(void) {
     // System Initialisering
@@ -359,11 +383,12 @@ int main(void) {
             // Check for signifikant ændring
             if (diff(filtered_value, last_filtered_value) > ADC_THRESHOLD)
             {
-                // Opdater PWM ved timer reset
-                if (TA1R == 0)
-                {     
-                    TA1CCR1 = filtered_value;
-                }
+                // Opdater PWM duty cycle
+                update_duty_cycle(filtered_value);
+                
+                // Beregn aktuel duty cycle og spænding
+                uint8_t duty_cycle = calculate_duty_cycle();
+                uint16_t voltage_mv = calculate_voltage_mv(duty_cycle);
                 
                 // Opdater display med ADC værdi
                 formatNumber(filtered_value, &curr_adc);
@@ -371,13 +396,12 @@ int main(void) {
                                  curr_adc.text, last_adc.text, MAX_DIGITS);
                 
                 // Opdater duty cycle visning
-                uint32_t duty_percent = ((uint32_t)filtered_value * 100) / 4095;
-                formatDutyDisplay(duty_percent, &curr_duty);
+                formatDutyDisplay(duty_cycle, &curr_duty);
                 updateDisplayValue(VALUE_X_POS, PWM_Y_POS,
                                  curr_duty.text, last_duty.text, DUTY_DIGITS);
                 
                 // Opdater spændingsvisning
-                float voltage = adc_to_voltage(filtered_value);
+                float voltage = voltage_mv / 1000.0f;
                 formatVoltageDisplay(voltage, &curr_volt);
                 updateDisplayValue(VALUE_X_POS, VOLT_Y_POS,
                                  curr_volt.text, last_volt.text, VOLT_DIGITS);
