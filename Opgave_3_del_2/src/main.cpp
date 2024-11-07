@@ -11,9 +11,18 @@
 #define ADC_MAX_VALUE (1 << ADC_BITS)
 #define MAX_DIGITS 6         // Maximum antal cifre vi viser
 #define VOLT_DIGITS 8        // Antal tegn for voltage display ("x.xxx V\0")
+#define DUTY_DIGITS 8        // Antal tegn for duty cycle ("xxx.xx %\0")
 #define CHAR_WIDTH 6         // Bredde af hvert tegn i pixels
 #define FILTER_SIZE 16       // Størrelse af moving average filter
 #define ADC_THRESHOLD 3      // Minimum ændring før update
+
+// Display position definitioner
+#define LABEL_X_POS 0        // X position for labels
+#define VALUE_X_POS 72       // X position for værdier (12 tegn * 6 pixels)
+#define LINE_SPACING 2       // Antal linjer mellem hver visning
+#define ADC_Y_POS 0         // Første linje
+#define PWM_Y_POS (ADC_Y_POS + LINE_SPACING)  // Anden linje
+#define VOLT_Y_POS (PWM_Y_POS + LINE_SPACING) // Tredje linje
 
 // Globale variable til ADC interrupt
 volatile uint16_t adc_data = 0;
@@ -36,17 +45,23 @@ typedef struct {
     uint8_t length;
 } VoltageDisplay;
 
+typedef struct {
+    char text[DUTY_DIGITS];     // For duty cycle med procent tegn
+    uint8_t length;
+} DutyDisplay;
+
 // Funktions prototyper
 void init_setup(void);
 void adc_init(void);
 void timer_init(void);
 void formatNumber(uint32_t number, DisplayValue* display);
-void updateDisplayValue(uint8_t x, uint8_t y, DisplayValue* new_value, DisplayValue* old_value);
+void formatVoltageDisplay(float voltage, VoltageDisplay* display);
+void formatDutyDisplay(uint32_t duty_percent, DutyDisplay* display);
+void updateDisplayValue(uint8_t x, uint8_t y, void* new_value, void* old_value, uint8_t max_length);
 void my_itoa(uint32_t value, char* str);
 uint16_t filter_adc(uint16_t new_sample);
 uint16_t diff(uint16_t a, uint16_t b);
 float adc_to_voltage(uint16_t adc_value);
-void formatVoltageDisplay(float voltage, VoltageDisplay* display);
 
 // Moving average filter
 uint16_t filter_adc(uint16_t new_sample) {
@@ -72,14 +87,14 @@ float adc_to_voltage(uint16_t adc_value) {
 
 // ADC initialisering
 void adc_init(void) {
-    ADC12CTL0 &= ~ADC12ENC;          
-    ADC12CTL0 = ADC12SHT0_3 | ADC12ON;
+    ADC12CTL0 &= ~ADC12ENC;           
+    ADC12CTL0 = ADC12SHT0_3 | ADC12ON; 
     ADC12CTL1 = ADC12SHP | ADC12SSEL_0;
-    ADC12CTL2 = ADC12RES_2;          
+    ADC12CTL2 = ADC12RES_2;           
     ADC12MCTL0 = ADC12INCH_12 | ADC12SREF_0;
-    ADC12IE |= ADC12IE0;             
-    P7SEL |= BIT0;                   
-    ADC12CTL0 |= ADC12ENC;           
+    ADC12IE |= ADC12IE0;              
+    P7SEL |= BIT0;                    
+    ADC12CTL0 |= ADC12ENC;            
 }
 
 // Timer initialisering
@@ -138,12 +153,16 @@ void formatNumber(uint32_t number, DisplayValue* display) {
 
 // Formatér spænding til display
 void formatVoltageDisplay(float voltage, VoltageDisplay* display) {
-    // Konverter til integer komponenter
     uint16_t vol_int = (uint16_t)voltage;
     uint16_t vol_dec = (uint16_t)((voltage - vol_int) * 1000);
     
-    // Formater som "x.xxx V"
     snprintf(display->text, VOLT_DIGITS, "%d.%03d V", vol_int, vol_dec);
+    display->length = strlen(display->text);
+}
+
+// Formatér duty cycle med procenttegn
+void formatDutyDisplay(uint32_t duty_percent, DutyDisplay* display) {
+    snprintf(display->text, DUTY_DIGITS, "%3lu %%", duty_percent);
     display->length = strlen(display->text);
 }
 
@@ -197,11 +216,11 @@ void init_setup(void) {
     adc_init();
     timer_init();
     
-    // Initialiser display
+    // Initialiser display med labels til venstre
     ssd1306_clearDisplay();
-    ssd1306_printText(0, 0, "ADC Value:");
-    ssd1306_printText(0, 2, "PWM Duty:");
-    ssd1306_printText(0, 4, "Voltage:");
+    ssd1306_printText(LABEL_X_POS, ADC_Y_POS, "ADC Value:");
+    ssd1306_printText(LABEL_X_POS, PWM_Y_POS, "PWM Duty:");
+    ssd1306_printText(LABEL_X_POS, VOLT_Y_POS, "Voltage:");
     
     __bis_SR_register(GIE);      // Enable global interrupts
 }
@@ -210,7 +229,7 @@ int main(void) {
     init_setup();
 
     static DisplayValue curr_adc = {{0}, 0}, last_adc = {{0}, 0};
-    static DisplayValue curr_duty = {{0}, 0}, last_duty = {{0}, 0};
+    static DutyDisplay curr_duty = {{0}, 0}, last_duty = {{0}, 0};
     static VoltageDisplay curr_volt = {{0}, 0}, last_volt = {{0}, 0};
     static uint16_t last_filtered_value = 0;
     
@@ -226,17 +245,17 @@ int main(void) {
                 
                 // Formater og vis ADC værdi
                 formatNumber(filtered_value, &curr_adc);
-                updateDisplayValue(0, 1, curr_adc.text, last_adc.text, MAX_DIGITS);
+                updateDisplayValue(VALUE_X_POS, ADC_Y_POS, curr_adc.text, last_adc.text, MAX_DIGITS);
                 
                 // Beregn og vis duty cycle i procent
                 uint32_t duty_percent = ((uint32_t)filtered_value * 100) / 4095;
-                formatNumber(duty_percent, &curr_duty);
-                updateDisplayValue(0, 3, curr_duty.text, last_duty.text, MAX_DIGITS);
+                formatDutyDisplay(duty_percent, &curr_duty);
+                updateDisplayValue(VALUE_X_POS, PWM_Y_POS, curr_duty.text, last_duty.text, DUTY_DIGITS);
                 
                 // Beregn og vis spænding
                 float voltage = adc_to_voltage(filtered_value);
                 formatVoltageDisplay(voltage, &curr_volt);
-                updateDisplayValue(0, 5, curr_volt.text, last_volt.text, VOLT_DIGITS);
+                updateDisplayValue(VALUE_X_POS, VOLT_Y_POS, curr_volt.text, last_volt.text, VOLT_DIGITS);
                 
                 last_filtered_value = filtered_value;
             }
