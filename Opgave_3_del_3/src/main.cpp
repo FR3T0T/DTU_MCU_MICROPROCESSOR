@@ -57,6 +57,11 @@
 #define PWM_Y_POS (ADC_Y_POS + LINE_SPACING)   // Y-position for PWM data
 #define VOLT_Y_POS (PWM_Y_POS + LINE_SPACING)  // Y-position for spænding
 
+
+// System Konstanter
+#define TARGET_VOLTAGE 1.0f  // Ønsket output spænding (V)
+#define TARGET_ADC ((uint16_t)((TARGET_VOLTAGE/VFS) * 4095))  // Konverteret til 12-bit værdi
+
 /****************************************************************************
 * Globale Variable og Buffere
 ****************************************************************************/
@@ -69,6 +74,12 @@ static uint16_t filter_buffer[FILTER_SIZE] = {0};  // Cirkulær sample buffer
 static uint8_t filter_index = 0;     // Aktuel buffer position
 static uint32_t filter_sum = 0;      // Løbende sum af samples
 static uint8_t filter_count = 0;     // Antal aktive samples
+
+// Del 3
+volatile float digital_Vo = 0;
+volatile float digital_Ve_error = 0;
+volatile uint16_t digital_Vd_volts = 0;
+volatile float compVal = 0;
 
 /****************************************************************************
 * Data Strukturer til Display Formattering
@@ -337,7 +348,9 @@ void TIMER0_A0_ISR(void) {
 /****************************************************************************
 * System Initialisering
 ****************************************************************************/
-void init_setup(void)
+
+  void init_SMCLK_XT2();
+  void init_setup(void)
 {
     // Basis System Protection
     WDTCTL = WDTPW | WDTHOLD;         // Stop watchdog timer
@@ -347,7 +360,7 @@ void init_setup(void)
     ssd1306_init();                   // Initialiser OLED
     adc_init();                       // Setup ADC system
     timer_init();                     // Setup timere
-    
+    init_SMCLK_XT2();
     // Display Layout Setup
     ssd1306_clearDisplay();
     ssd1306_printText(LABEL_X_POS, ADC_Y_POS, "ADC Value:");
@@ -358,63 +371,79 @@ void init_setup(void)
     __bis_SR_register(GIE);           // Global interrupt enable
 }
 
+void init_SMCLK_XT2()
+{
+    WDTCTL = WDTPW|WDTHOLD; // Stop watchdog timer
+    P5SEL |= BIT2+BIT3;                       // Port select XT2
+    UCSCTL6 &= ~XT2OFF;                       // Enable XT2
+    UCSCTL4 |= SELA_2;                        // ACLK=REFO,SMCLK=DCO,MCLK=DCO
+    UCSCTL4 |= SELS_5 + SELM_5;               // SMCLK=MCLK=XT2
+    // Loop until XT1,XT2 & DCO stabilizes - in this case loop until XT2 settles
+    do
+    {
+        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
+
+                                           // Clear XT2,XT1,DCO fault flags
+
+        SFRIFG1 &= ~OFIFG;                      // Clear fault flags
+
+    }
+    while (SFRIFG1&OFIFG);                   // Test oscillator fault flag
+}
+
 /****************************************************************************
 * Opdateret Main Loop
 ****************************************************************************/
 int main(void) {
-    // System Initialisering
-    init_setup();
-
-    // Display Buffer Initialisering
-    static DisplayValue curr_adc = {{0}, 0}, last_adc = {{0}, 0};
-    static DutyDisplay curr_duty = {{0}, 0}, last_duty = {{0}, 0};
-    static VoltageDisplay curr_volt = {{0}, 0}, last_volt = {{0}, 0};
-    static uint16_t last_filtered_value = 0;
-    
-    // Hovedløkke
-    while(1)
-    {
-        // Vent på ny ADC data
-        if (adc_flag)
-        {
-            // Anvend digital filter
-            uint16_t filtered_value = filter_adc(adc_data);
-            
-            // Check for signifikant ændring
-            if (diff(filtered_value, last_filtered_value) > ADC_THRESHOLD)
-            {
-                // Opdater PWM duty cycle
-                update_duty_cycle(filtered_value);
-                
-                // Beregn aktuel duty cycle og spænding
-                uint8_t duty_cycle = calculate_duty_cycle();
-                uint16_t voltage_mv = calculate_voltage_mv(duty_cycle);
-                
-                // Opdater display med ADC værdi
-                formatNumber(filtered_value, &curr_adc);
-                updateDisplayValue(VALUE_X_POS, ADC_Y_POS, 
-                                 curr_adc.text, last_adc.text, MAX_DIGITS);
-                
-                // Opdater duty cycle visning
-                formatDutyDisplay(duty_cycle, &curr_duty);
-                updateDisplayValue(VALUE_X_POS, PWM_Y_POS,
-                                 curr_duty.text, last_duty.text, DUTY_DIGITS);
-                
-                // Opdater spændingsvisning
-                float voltage = voltage_mv / 1000.0f;
-                formatVoltageDisplay(voltage, &curr_volt);
-                updateDisplayValue(VALUE_X_POS, VOLT_Y_POS,
-                                 curr_volt.text, last_volt.text, VOLT_DIGITS);
-                
-                // Gem sidste værdi
-                last_filtered_value = filtered_value;
-            }
-            
-            // Reset flag og tilføj delay
-            adc_flag = 0;
-            __delay_cycles(40);        // 1ms delay ved 4MHz
-        }
-    }
-    
-    return 0;
+   init_setup();
+   
+   static DisplayValue curr_adc = {{0}, 0}, last_adc = {{0}, 0};
+   static DutyDisplay curr_duty = {{0}, 0}, last_duty = {{0}, 0};
+   static VoltageDisplay curr_volt = {{0}, 0}, last_volt = {{0}, 0};
+   static uint16_t last_filtered_value = 0;
+   
+   float G = 1.0;
+   uint16_t set_digital_vd = TARGET_ADC;
+   
+   while(1) {
+       if (adc_flag) {
+           uint16_t filtered_value = filter_adc(adc_data);
+           
+           if (diff(filtered_value, last_filtered_value) > ADC_THRESHOLD) {
+               digital_Vo = filtered_value;
+               digital_Ve_error = set_digital_vd - digital_Vo;
+               compVal = G * digital_Ve_error;
+               
+               float max_step = 100.0f;
+               if (compVal > max_step) compVal = max_step;
+               if (compVal < -max_step) compVal = -max_step;
+               
+               int32_t new_pwm = TA1CCR1;
+               new_pwm += (int32_t)compVal;
+               if (new_pwm > 4095) new_pwm = 4095;
+               if (new_pwm < 0) new_pwm = 0;
+               TA1CCR1 = (uint16_t)new_pwm;
+               
+               formatNumber(filtered_value, &curr_adc);
+               updateDisplayValue(VALUE_X_POS, ADC_Y_POS, 
+                                curr_adc.text, last_adc.text, MAX_DIGITS);
+               
+               uint8_t duty_cycle = calculate_duty_cycle();
+               formatDutyDisplay(duty_cycle, &curr_duty);
+               updateDisplayValue(VALUE_X_POS, PWM_Y_POS,
+                                curr_duty.text, last_duty.text, DUTY_DIGITS);
+               
+               float voltage = adc_to_voltage(filtered_value);
+               formatVoltageDisplay(voltage, &curr_volt);
+               updateDisplayValue(VALUE_X_POS, VOLT_Y_POS,
+                                curr_volt.text, last_volt.text, VOLT_DIGITS);
+               
+               last_filtered_value = filtered_value;
+           }
+           
+           adc_flag = 0;
+           __delay_cycles(40);
+       }
+   }
+   return 0;
 }

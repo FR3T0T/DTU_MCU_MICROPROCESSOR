@@ -337,7 +337,9 @@ void TIMER0_A0_ISR(void) {
 /****************************************************************************
 * System Initialisering
 ****************************************************************************/
-void init_setup(void)
+
+  void init_SMCLK_XT2();
+  void init_setup(void)
 {
     // Basis System Protection
     WDTCTL = WDTPW | WDTHOLD;         // Stop watchdog timer
@@ -347,7 +349,7 @@ void init_setup(void)
     ssd1306_init();                   // Initialiser OLED
     adc_init();                       // Setup ADC system
     timer_init();                     // Setup timere
-    
+    init_SMCLK_XT2();
     // Display Layout Setup
     ssd1306_clearDisplay();
     ssd1306_printText(LABEL_X_POS, ADC_Y_POS, "ADC Value:");
@@ -356,6 +358,26 @@ void init_setup(void)
     
     // Enable Interrupts
     __bis_SR_register(GIE);           // Global interrupt enable
+}
+
+void init_SMCLK_XT2()
+{
+    WDTCTL = WDTPW|WDTHOLD; // Stop watchdog timer
+    P5SEL |= BIT2+BIT3;                       // Port select XT2
+    UCSCTL6 &= ~XT2OFF;                       // Enable XT2
+    UCSCTL4 |= SELA_2;                        // ACLK=REFO,SMCLK=DCO,MCLK=DCO
+    UCSCTL4 |= SELS_5 + SELM_5;               // SMCLK=MCLK=XT2
+    // Loop until XT1,XT2 & DCO stabilizes - in this case loop until XT2 settles
+    do
+    {
+        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
+
+                                           // Clear XT2,XT1,DCO fault flags
+
+        SFRIFG1 &= ~OFIFG;                      // Clear fault flags
+
+    }
+    while (SFRIFG1&OFIFG);                   // Test oscillator fault flag
 }
 
 /****************************************************************************
