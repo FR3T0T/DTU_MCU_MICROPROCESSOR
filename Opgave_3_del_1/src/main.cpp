@@ -27,23 +27,7 @@
 * Konstanter og Definitioner
 ****************************************************************************/
 // System Clock og Timer Konstanter
-#define SMCLK_FREQ      4000000.0f    // System clock frekvens (4 MHz)
 #define TA1CCR0_VALUE   4095          // Timer A1 periode (12-bit opløsning)
-
-// PWM og Filter Beregninger
-#define PWM_FREQ        (SMCLK_FREQ / TA1CCR0_VALUE)  // ≈ 976.56 Hz
-#define FILTER_RATIO    75            // Forhold mellem PWM og filter frekvens
-#define CUTOFF_FREQ     (PWM_FREQ / FILTER_RATIO)     // ≈ 13 Hz
-
-/*
-* RC Filter Design Notes:
-* - Ønsket cutoff frekvens: 13 Hz
-* - Valgt kapacitor: C = 1µF
-* - Beregnet modstand: R = 1/(2π * f * C) = 1/(2 * 3.14159 * 13 * 0.000001) ≈ 12.2kΩ
-* - Bruger standard værdi: R = 12kΩ
-* 
-* Dette giver en faktisk cutoff frekvens på ca. 13.3 Hz
-*/
 
 /****************************************************************************
 * Globale Variabler
@@ -67,16 +51,6 @@ void init_ports()
     // Port Select Konfiguration
     P6SEL = 0x00;      // Port 6 som digital I/O
     P7SEL = 0;         // Port 7 som digital I/O
-  
-    // I2C Pin Setup
-    pinMode(P1_1, INPUT_PULLUP);    // SDA med pull-up
-    digitalWrite(P1_1, HIGH);
-    
-    // General I/O Setup
-    pinMode(P4_7, OUTPUT);          // LED kontrol
-    pinMode(P1_0, OUTPUT);          // Reserve output
-    pinMode(P2_1, INPUT_PULLUP);    // Reserve input
-    digitalWrite(P2_1, HIGH);
     
     // DIP Switch Konfiguration (P6.0-P6.6)
     P6DIR = 0;                      // Alle P6 pins som input
@@ -96,12 +70,10 @@ void init_ports()
 ****************************************************************************/
 void init_SMCLK_XT2()
 {
-    WDTCTL = WDTPW | WDTHOLD;         // Stop watchdog timer
-    
-    P5SEL |= BIT2 + BIT3;             // XT2 krystal pins
-    UCSCTL6 &= ~XT2OFF;               // Enable XT2
-    UCSCTL4 |= SELA_2;                // ACLK fra REFO
-    UCSCTL4 |= SELS_5 + SELM_5;       // SMCLK og MCLK fra XT2
+    WDTCTL = WDTPW | WDTHOLD;               // Stop watchdog timer
+    P5SEL |= BIT2 + BIT3;                   // XT2 krystal pins
+    UCSCTL6 &= ~XT2OFF;                     // Enable XT2
+    UCSCTL4 = SELA_2 | SELS_5 | SELM_5;     // Konfigurer alle clock kilder på én gang
     
     // Oscillator fejl check loop
     do
@@ -115,15 +87,13 @@ void init_SMCLK_XT2()
 * PWM Initialisering
 * 
 * Konfigurerer Timer A1 til PWM generation:
-* - Frekvens: ~976.56 Hz (4MHz/4095)
 * - Resolution: 12-bit (0-4095)
-* - Output: P2.0
 ****************************************************************************/
 void init_pwm()
 {
     TA1CTL = TASSEL_2 |             // SMCLK som kilde
-             MC_1 |                  // Up mode
-             TACLR;                  // Clear timer
+             MC_1 |                 // Up mode
+             TACLR;                 // Clear timer
 
     TA1CCR0 = TA1CCR0_VALUE;        // PWM periode
     TA1CCR1 = TA1CCR0_VALUE / 2;    // Initial 50% duty cycle
@@ -144,7 +114,7 @@ void update_duty_cycle(uint8_t dip_value)
 {
     // Præcis skalering fra 8-bit til 12-bit
     // 4095/255 = 16.0588... hvilket giver mere præcis duty cycle
-    uint32_t scaled_value = ((uint32_t)dip_value * 4095) / 255;
+    uint32_t scaled_value = ((uint32_t)dip_value * TA1CCR0_VALUE) / 255;
     TA1CCR1 = (uint16_t)scaled_value;
 }
 
@@ -168,7 +138,6 @@ __interrupt void Timer1_A0_ISR(void)
 {
     // Læs og inverter DIP switch status
     uint8_t dip_value = ~((P6IN & 0x7F) | ((P7IN & BIT0) << 7));
-    dip_value &= 0xFF; // Mask til 8-bit
 
     // Tjek for ændringer
     if (dip_value != prev_dip_value)
