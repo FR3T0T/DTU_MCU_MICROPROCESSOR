@@ -34,7 +34,7 @@
 // ADC og Reference Parametre
 #define VFS 3.3f            // System reference spænding (3.3V)
 #define ADC_BITS 10         // ADC opløsning (10-bit)
-#define ADC_MAX_VALUE (1 << ADC_BITS)  // Maksimal ADC værdi (4096)
+#define ADC_MAX_VALUE (1 << ADC_BITS)  // Maksimal ADC værdi (1024 for 10-bit)
 
 // Display Formattering
 #define MAX_DIGITS 6        // Maximum antal cifre for numerisk display
@@ -52,7 +52,7 @@
 * Display Layout Konfiguration
 ****************************************************************************/
 #define LABEL_X_POS 0       // Start position for labels
-#define VALUE_X_POS 72      // Start position for værdier (12 * 6 pixels)
+#define VALUE_X_POS 72      // Start position for værdier (12 karakterer * CHAR_WIDTH pixels)
 #define LINE_SPACING 2      // Vertikal afstand mellem linjer
 #define ADC_Y_POS 0         // Y-position for ADC værdier
 #define PWM_Y_POS (ADC_Y_POS + LINE_SPACING)   // Y-position for PWM data
@@ -61,7 +61,7 @@
 
 // System Konstanter
 #define TARGET_VOLTAGE 1.0f  // Ønsket output spænding (V)
-#define TARGET_ADC ((uint16_t)((TARGET_VOLTAGE/VFS) * TA1CCR0_VALUE))  // Konverteret til 12-bit værdi
+#define TARGET_ADC ((uint16_t)((TARGET_VOLTAGE/VFS) * TA1CCR0_VALUE))  // Konverteret til 10-bit værdi
 
 /****************************************************************************
 * Globale Variable og Buffere
@@ -76,11 +76,10 @@ static uint8_t filter_index = 0;     // Aktuel buffer position
 static uint32_t filter_sum = 0;      // Løbende sum af samples
 static uint8_t filter_count = 0;     // Antal aktive samples
 
-// Del 3
-volatile float digital_Vo = 0;
-volatile float digital_Ve_error = 0;
-uint16_t digital_Vd_volts = 0;
-volatile float compVal = 0;
+// Del 3 - Control variabler
+volatile float digital_Vo = 0;     // Deles mellem interrupt og hovedløkke
+float digital_Ve_error = 0;        // Kun brugt i hovedløkke
+float compVal = 0;                 // Kun brugt i hovedløkke
 
 /****************************************************************************
 * Data Strukturer til Display Formattering
@@ -140,7 +139,7 @@ uint16_t diff(uint16_t a, uint16_t b)
 // ADC til Spændings Konvertering
 float adc_to_voltage(uint16_t adc_value)
 {
-    // Konverter 12-bit ADC værdi til aktuel spænding
+    // Konverter 10-bit ADC værdi til aktuel spænding
     // Bruger VFS (3.3V) som reference
     return (float)adc_value * VFS / ADC_MAX_VALUE;
 }
@@ -162,7 +161,7 @@ void adc_init(void)
               | ADC12SSEL_0;           // ADC12OSC som clock kilde
               
     // ADC12CTL2 Register Setup
-    ADC12CTL2 = ADC12RES_1;            // Changed from ADC12RES_2 to ADC12RES_1 for 10-bit
+    ADC12CTL2 = ADC12RES_1;            // Sæt ADC opløsning til 10-bit
     
     // Input Kanal Konfiguration
     ADC12MCTL0 = ADC12INCH_12          // Input på kanal 12
@@ -181,34 +180,21 @@ void adc_init(void)
 /****************************************************************************
 * Nye PWM og Duty Cycle Funktioner
 ****************************************************************************/
-// Opdaterer PWM duty cycle baseret på ADC værdi
-void update_duty_cycle(uint16_t adc_value)
-{
-    // Direkte mapping da både ADC og PWM er 12-bit
-    TA1CCR1 = adc_value;
-}
-
 // Beregner aktuel duty cycle i procent
 uint8_t calculate_duty_cycle(void)
 {
     return (uint8_t)((((uint32_t)TA1CCR1 * 100) / TA1CCR0_VALUE));
 }
 
-// Beregner forventet output spænding i millivolt
-uint16_t calculate_voltage_mv(uint8_t duty_cycle)
-{
-    return (3300 * duty_cycle) / 100;  // 3.3V = 3300mV
-}
-
 void timer_init(void)
 {
     // Timer A0 Konfiguration (ADC Trigger) - behold som er
     TA0CTL = TASSEL_2 | MC_1 | TACLR;  // SMCLK, Up mode, clear timer
-    TA0CCR0 = 3999;                     // Set period
+    TA0CCR0 = 3999;                     // ADC sampling periode (1kHz ved 4MHz SMCLK)
     TA0CCTL0 = CCIE;                    // Enable interrupt
     
     // PWM Setup
-    TA1CCR0 = TA1CCR0_VALUE;           // PWM periode (12-bit)
+    TA1CCR0 = TA1CCR0_VALUE;           // PWM periode (10-bit)
     TA1CCTL1 = OUTMOD_7;               // Reset/Set PWM mode
     TA1CCR1 = 0;                       // Start med 0% duty cycle
     
@@ -345,12 +331,12 @@ void TIMER0_A0_ISR(void) {
 /****************************************************************************
 * System Initialisering
 ****************************************************************************/
-void init_SMCLK_XT2()
+void init_smclk_xt2()
 {
-    P5SEL |= BIT2+BIT3;                       // Port select XT2
-    UCSCTL6 &= ~XT2OFF;                       // Enable XT2
-    UCSCTL4 |= SELA_2;                        // ACLK=REFO,SMCLK=DCO,MCLK=DCO
-    UCSCTL4 |= SELS_5 + SELM_5;               // SMCLK=MCLK=XT2
+    P5SEL |= BIT2+BIT3;         // Port select XT2
+    UCSCTL6 &= ~XT2OFF;         // Enable XT2
+    UCSCTL4 |= SELA_2;          // ACLK=REFO,SMCLK=DCO,MCLK=DCO
+    UCSCTL4 |= SELS_5 + SELM_5; // SMCLK=MCLK=XT2
     // Loop until XT1,XT2 & DCO stabilizes - in this case loop until XT2 settles
     do
     {
@@ -360,7 +346,7 @@ void init_SMCLK_XT2()
     while (SFRIFG1&OFIFG);                              // Test oscillator fault flag
 }
 
-  void init_setup(void)
+void init_setup(void)
 {
     // Basis System Protection
     WDTCTL = WDTPW | WDTHOLD;         // Stop watchdog timer
@@ -370,7 +356,7 @@ void init_SMCLK_XT2()
     ssd1306_init();                   // Initialiser OLED
     adc_init();                       // Setup ADC system
     timer_init();                     // Setup timere
-    init_SMCLK_XT2();
+    init_smclk_xt2();
     // Display Layout Setup
     ssd1306_clearDisplay();
     ssd1306_printText(LABEL_X_POS, ADC_Y_POS, "ADC Value:");
@@ -429,28 +415,22 @@ int main(void) {
                 
                 // Opdater ADC værdi på display
                 formatNumber(filtered_value, &curr_adc);
-                updateDisplayValue(VALUE_X_POS, ADC_Y_POS, 
-                                 curr_adc.text, last_adc.text, MAX_DIGITS);
+                updateDisplayValue(VALUE_X_POS, ADC_Y_POS, curr_adc.text, last_adc.text, MAX_DIGITS);
                 
                 // Opdater duty cycle værdi på display
                 uint8_t duty_cycle = calculate_duty_cycle();
                 formatDutyDisplay(duty_cycle, &curr_duty);
-                updateDisplayValue(VALUE_X_POS, PWM_Y_POS,
-                                 curr_duty.text, last_duty.text, DISPLAY_BUFFER);
+                updateDisplayValue(VALUE_X_POS, PWM_Y_POS, curr_duty.text, last_duty.text, DISPLAY_BUFFER);
                 
                 // Opdater spændings værdi på display
                 float voltage = adc_to_voltage(filtered_value);
                 formatVoltageDisplay(voltage, &curr_volt);
-                updateDisplayValue(VALUE_X_POS, VOLT_Y_POS,
-                                 curr_volt.text, last_volt.text, DISPLAY_BUFFER);
-                
+                updateDisplayValue(VALUE_X_POS, VOLT_Y_POS, curr_volt.text, last_volt.text, DISPLAY_BUFFER);
+
                 // Gem den filtrerede værdi til næste sammenligning
                 last_filtered_value = filtered_value;
             }
-            
-            // Nulstil ADC flag og vent kort tid for stabilitet
-            adc_flag = 0;
-            __delay_cycles(40);
+            adc_flag = 0;  // Nulstil ADC flag til næste konversion
         }
     }
     return 0;  // Returnér 0 ved normal afslutning (nås aldrig i praksis)
