@@ -38,8 +38,7 @@
 
 // Display Formattering
 #define MAX_DIGITS 6        // Maximum antal cifre for numerisk display
-#define VOLT_DIGITS 8       // Buffer størrelse for spændingsvisning ("x.xxx V\0")
-#define DUTY_DIGITS 8       // Buffer størrelse for duty cycle ("xxx.xx %\0")
+#define DISPLAY_BUFFER 8    // Fælles buffer størrelse
 #define CHAR_WIDTH 6        // Pixel bredde per karakter
 
 // Signal Processing
@@ -80,7 +79,7 @@ static uint8_t filter_count = 0;     // Antal aktive samples
 // Del 3
 volatile float digital_Vo = 0;
 volatile float digital_Ve_error = 0;
-volatile uint16_t digital_Vd_volts = 0;
+uint16_t digital_Vd_volts = 0;
 volatile float compVal = 0;
 
 /****************************************************************************
@@ -96,14 +95,14 @@ typedef struct
 // Spændings Display Format
 typedef struct
 {
-    char text[VOLT_DIGITS];     // Buffer til spændingsværdi
+    char text[DISPLAY_BUFFER];     // Buffer til spændingsværdi
     uint8_t length;             // Aktuel længde
 } VoltageDisplay;
 
 // Duty Cycle Display Format
 typedef struct
 {
-    char text[DUTY_DIGITS];     // Buffer til duty cycle
+    char text[DISPLAY_BUFFER];     // Buffer til duty cycle
     uint8_t length;             // Aktuel længde
 } DutyDisplay;
 
@@ -207,9 +206,6 @@ void timer_init(void)
     TA0CTL = TASSEL_2 | MC_1 | TACLR;  // SMCLK, Up mode, clear timer
     TA0CCR0 = 3999;                     // Set period
     TA0CCTL0 = CCIE;                    // Enable interrupt
-
-    // Timer A1 Konfiguration (PWM Generator)
-    TA1CTL = MC_0;                      // Stop timer først
     
     // PWM Setup
     TA1CCR0 = TA1CCR0_VALUE;           // PWM periode (12-bit)
@@ -224,7 +220,6 @@ void timer_init(void)
     // PWM Output Setup - Updated for MSP430F5529
     P2DIR |= BIT0;                     // P2.0 som output
     P2SEL |= BIT0;                     // P2.0 til PWM funktion (TA1.1)
-    P2OUT &= ~BIT0;                    // Start lav
 }
 
 /****************************************************************************
@@ -286,7 +281,7 @@ void formatVoltageDisplay(float voltage, VoltageDisplay* display)
     uint16_t vol_dec = (uint16_t)((voltage - vol_int) * 1000);
     
     // Formatér med 3 decimaler
-    snprintf(display->text, VOLT_DIGITS, "%d.%03d V", vol_int, vol_dec);
+    snprintf(display->text, DISPLAY_BUFFER, "%d.%03d V", vol_int, vol_dec);
     display->length = strlen(display->text);
 }
 
@@ -294,7 +289,7 @@ void formatVoltageDisplay(float voltage, VoltageDisplay* display)
 void formatDutyDisplay(uint32_t duty_percent, DutyDisplay* display)
 {
     // Formatér med procent symbol
-    snprintf(display->text, DUTY_DIGITS, "%3lu %%", duty_percent);
+    snprintf(display->text, DISPLAY_BUFFER, "%3lu %%", duty_percent);
     display->length = strlen(display->text);
 }
 
@@ -352,7 +347,6 @@ void TIMER0_A0_ISR(void) {
 ****************************************************************************/
 void init_SMCLK_XT2()
 {
-    WDTCTL = WDTPW|WDTHOLD; // Stop watchdog timer
     P5SEL |= BIT2+BIT3;                       // Port select XT2
     UCSCTL6 &= ~XT2OFF;                       // Enable XT2
     UCSCTL4 |= SELA_2;                        // ACLK=REFO,SMCLK=DCO,MCLK=DCO
@@ -442,13 +436,13 @@ int main(void) {
                 uint8_t duty_cycle = calculate_duty_cycle();
                 formatDutyDisplay(duty_cycle, &curr_duty);
                 updateDisplayValue(VALUE_X_POS, PWM_Y_POS,
-                                 curr_duty.text, last_duty.text, DUTY_DIGITS);
+                                 curr_duty.text, last_duty.text, DISPLAY_BUFFER);
                 
                 // Opdater spændings værdi på display
                 float voltage = adc_to_voltage(filtered_value);
                 formatVoltageDisplay(voltage, &curr_volt);
                 updateDisplayValue(VALUE_X_POS, VOLT_Y_POS,
-                                 curr_volt.text, last_volt.text, VOLT_DIGITS);
+                                 curr_volt.text, last_volt.text, DISPLAY_BUFFER);
                 
                 // Gem den filtrerede værdi til næste sammenligning
                 last_filtered_value = filtered_value;
