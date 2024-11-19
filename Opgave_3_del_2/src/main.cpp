@@ -383,7 +383,8 @@ void init_SMCLK_XT2()
 /****************************************************************************
 * Opdateret Main Loop
 ****************************************************************************/
-int main(void) {
+int main(void)
+{
     // System Initialisering
     init_setup();
 

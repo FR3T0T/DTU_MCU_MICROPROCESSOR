@@ -1,4 +1,6 @@
 /*******************************************************************************
+* Co-Pilot, Chat-GPT & Claude AI er blevet brugt til fejlfinding og hjælp.
+*
 * DEL 1
 * PWM Generator med DIP Switch Kontrol og OLED Display
 *
@@ -14,7 +16,6 @@
 * - OLED display tilsluttet via I2C
 * - RC lavpasfilter (12kΩ og 1µF) kan tilsluttes P2.0
 *
-* Udviklet til: DTU Engineering Technology ECS 2024
 *******************************************************************************/
 
 #include <Arduino.h>
@@ -45,6 +46,14 @@
 */
 
 /****************************************************************************
+* Globale Variabler
+****************************************************************************/
+volatile uint8_t prev_dip_value = 0;
+volatile uint8_t new_dip_value = 0;
+volatile uint8_t update_needed = 0;
+char display_text[32]; // Display tekst buffer
+
+/****************************************************************************
 * Port Initialisering
 * 
 * Konfigurerer alle nødvendige porte for:
@@ -71,12 +80,12 @@ void init_ports()
     
     // DIP Switch Konfiguration (P6.0-P6.6)
     P6DIR = 0;                      // Alle P6 pins som input
-    P6REN |= 0x7F;                 // Enable pull-up/down for P6.0-P6.6
-    P6OUT |= 0x7F;                 // Vælg pull-up
+    P6REN |= 0x7F;                  // Enable pull-up/down for P6.0-P6.6
+    P6OUT |= 0x7F;                  // Vælg pull-up
     
     // MSB DIP Switch (P7.0)
-    P7REN |= BIT0;                 // Enable pull-up/down
-    P7OUT |= BIT0;                 // Vælg pull-up
+    P7REN |= BIT0;                  // Enable pull-up/down
+    P7OUT |= BIT0;                  // Vælg pull-up
 }
 
 /****************************************************************************
@@ -87,18 +96,19 @@ void init_ports()
 ****************************************************************************/
 void init_SMCLK_XT2()
 {
-    WDTCTL = WDTPW|WDTHOLD;         // Stop watchdog timer
+    WDTCTL = WDTPW | WDTHOLD;         // Stop watchdog timer
     
-    P5SEL |= BIT2+BIT3;             // XT2 krystal pins
-    UCSCTL6 &= ~XT2OFF;             // Enable XT2
-    UCSCTL4 |= SELA_2;              // ACLK fra REFO
-    UCSCTL4 |= SELS_5 + SELM_5;     // SMCLK og MCLK fra XT2
+    P5SEL |= BIT2 + BIT3;             // XT2 krystal pins
+    UCSCTL6 &= ~XT2OFF;               // Enable XT2
+    UCSCTL4 |= SELA_2;                // ACLK fra REFO
+    UCSCTL4 |= SELS_5 + SELM_5;       // SMCLK og MCLK fra XT2
     
     // Oscillator fejl check loop
-    do {
+    do
+    {
         UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
         SFRIFG1 &= ~OFIFG;
-    } while (SFRIFG1&OFIFG);
+    } while (SFRIFG1 & OFIFG);
 }
 
 /****************************************************************************
@@ -116,10 +126,12 @@ void init_pwm()
              TACLR;                  // Clear timer
 
     TA1CCR0 = TA1CCR0_VALUE;        // PWM periode
-    TA1CCR1 = TA1CCR0_VALUE/2;      // Initial 50% duty cycle
+    TA1CCR1 = TA1CCR0_VALUE / 2;    // Initial 50% duty cycle
     
     TA1CCTL1 = OUTMOD_7;            // Reset/Set PWM mode
     
+    TA1CCTL0 = CCIE;                // Aktiver interrupt for CCR0
+
     pinMode(P2_0, OUTPUT);
     P2SEL |= BIT0;                  // P2.0 som PWM output
 }
@@ -149,6 +161,27 @@ uint16_t calculate_voltage_mv(uint8_t duty_cycle)
 }
 
 /****************************************************************************
+* Interrupt Service Routine for Timer A1
+****************************************************************************/
+#pragma vector = TIMER1_A0_VECTOR
+__interrupt void Timer1_A0_ISR(void)
+{
+    // Læs og inverter DIP switch status
+    uint8_t dip_value = ~((P6IN & 0x7F) | ((P7IN & BIT0) << 7));
+    dip_value &= 0xFF; // Mask til 8-bit
+
+    // Tjek for ændringer
+    if (dip_value != prev_dip_value)
+    {
+        new_dip_value = dip_value;
+        update_needed = 1; // Sæt flag for opdatering
+
+        // Exit fra low-power mode
+        __bic_SR_register_on_exit(LPM0_bits);
+    }
+}
+
+/****************************************************************************
 * Hovedprogram
 ****************************************************************************/
 int main()
@@ -156,20 +189,14 @@ int main()
     /* Initial system setup */
     WDTCTL = WDTPW | WDTHOLD;       // Stop watchdog timer
     init_SMCLK_XT2();               // Setup 4 MHz clock
-    init_ports();                    // Konfigurer porte
-    init_pwm();                      // Setup PWM
- 
+    init_ports();                   // Konfigurer porte
+    init_pwm();                     // Setup PWM
+
     /* Display initialisering */
     i2c_init();
     ssd1306_init();
     reset_diplay();
     ssd1306_clearDisplay();
-    
-    /* Variable deklarationer */
-    char display_text[32];          // Display text buffer
-    uint8_t duty_cycle;             // Aktuel duty cycle
-    uint8_t prev_dip_value = 0;     // For ændring detektion
-    uint8_t prev_duty_cycle = 0;    // For ændring detektion
 
     /* Display layout setup */
     ssd1306_printText(0, 0, "DIP:");    // DIP switch værdi
@@ -177,49 +204,48 @@ int main()
     ssd1306_printText(0, 4, "CCR1:");   // Timer værdi
     ssd1306_printText(0, 6, "DC V:");   // Beregnet spænding
 
+    __bis_SR_register(GIE); // Aktiver globale interrupts
+
     /* Hovedløkke */
-    while(1)
+    while (1)
     {
-        // Læs og inverter DIP switch status
-        uint8_t dip_value = ~((P6IN & 0x7F) | ((P7IN & BIT0) << 7));
-        dip_value &= 0xFF;  // Mask til 8-bit
-        
-        // Kun opdater ved ændringer
-        if(dip_value != prev_dip_value)
+        if (update_needed)
         {
+            // Sikre atomar adgang til shared variables
+            __disable_interrupt();
+            uint8_t dip_value = new_dip_value;
+            update_needed = 0;
+            __enable_interrupt();
+
             // Opdater PWM og beregn nye værdier
             update_duty_cycle(dip_value);
-            duty_cycle = calculate_duty_cycle();
-            
+            uint8_t duty_cycle = calculate_duty_cycle();
+
             /* Opdater display */
             // DIP værdi
             sprintf(display_text, "%d   ", dip_value);
             ssd1306_printText(40, 0, display_text);
-            
+
             // Duty cycle
             sprintf(display_text, "%d%%   ", duty_cycle);
             ssd1306_printText(40, 2, display_text);
-            
+
             // Timer værdi
             sprintf(display_text, "%d   ", TA1CCR1);
             ssd1306_printText(40, 4, display_text);
-            
+
             // Beregnet spænding
             uint16_t voltage_mv = calculate_voltage_mv(duty_cycle);
             uint16_t volts = voltage_mv / 1000;
             uint16_t mv = voltage_mv % 1000;
-            sprintf(display_text, "%d.%02dV  ", volts, mv/10);
+            sprintf(display_text, "%d.%02dV  ", volts, mv / 10);
             ssd1306_printText(40, 6, display_text);
-            
-            // Gem værdier til næste iteration
+
+            // Opdater tidligere DIP værdi
             prev_dip_value = dip_value;
-            prev_duty_cycle = duty_cycle;
         }
-        
-        // Synkroniser med PWM timer
-        while(!(TA1CCTL1 & CCIFG));    // Vent på CCR1 match
-        TA1CCTL1 &= ~CCIFG;            // Clear flag
-        
-        __delay_cycles(50000);          // Delay for stabil operation
+
+        // Gå i low-power mode og vent på interrupt
+        __bis_SR_register(LPM0_bits + GIE);
     }
 }
