@@ -19,21 +19,16 @@
 *******************************************************************************/
 
 /* Nødvendige Header Filer */
-#include <msp430.h>          // MSP430 hardware definitioner
-#include <stdint.h>          // Standard integer typer
-#include <string.h>          // String manipulation funktioner
-#include <stdio.h>           // Standard I/O funktioner
+#include <msp430.h>         // MSP430 hardware definitioner
+#include <stdint.h>         // Standard integer typer
+#include <string.h>         // String manipulation funktioner
+#include <stdio.h>          // Standard I/O funktioner
 #include "i2c.h"            // I2C kommunikation driver
 #include "ssd1306.h"        // OLED display driver
 
 /****************************************************************************
 * System Konstanter og Konfiguration
 ****************************************************************************/
-// ADC og Reference Parametre
-#define VFS 3.3f            // System reference spænding (3.3V)
-#define ADC_BITS 12         // ADC opløsning (12-bit)
-#define ADC_MAX_VALUE (1 << ADC_BITS)  // Maksimal ADC værdi (4096)
-
 // Display Formattering
 #define MAX_DIGITS 6        // Maximum antal cifre for numerisk display
 #define VOLT_DIGITS 8       // Buffer størrelse for spændingsvisning ("x.xxx V\0")
@@ -42,33 +37,32 @@
 
 // Signal Processing
 #define FILTER_SIZE 16      // Moving average filter længde
-                           // Større værdi = mere udglatning
+                            // Større værdi = mere udglatning
 #define ADC_THRESHOLD 3     // Minimum ændring før display update
-                           // Reducerer display flimmer
-#define TA1CCR0_VALUE 4095    // PWM periode (12-bit)
+                            // Reducerer display flimmer
+#define TA1CCR0_VALUE 4095  // PWM periode (12-bit)
 
 /****************************************************************************
 * Display Layout Konfiguration
 ****************************************************************************/
 #define LABEL_X_POS 0       // Start position for labels
 #define VALUE_X_POS 72      // Start position for værdier (12 * 6 pixels)
-#define LINE_SPACING 2      // Vertikal afstand mellem linjer
-#define ADC_Y_POS 0        // Y-position for ADC værdier
-#define PWM_Y_POS (ADC_Y_POS + LINE_SPACING)   // Y-position for PWM data
-#define VOLT_Y_POS (PWM_Y_POS + LINE_SPACING)  // Y-position for spænding
+#define ADC_Y_POS 0         
+#define PWM_Y_POS 2   // ADC_Y_POS + 2
+#define VOLT_Y_POS 4   // PWM_Y_POS + 2
 
 /****************************************************************************
 * Globale Variable og Buffere
 ****************************************************************************/
 // ADC Interrupt Variable
-volatile uint16_t adc_data = 0;    // Holder seneste ADC måling
-volatile uint8_t adc_flag = 0;     // Signalerer ny data til main loop
+volatile uint16_t adc_data = 0;     // Holder seneste ADC måling
+volatile uint8_t adc_flag = 0;      // Signalerer ny data til main loop
 
 // Moving Average Filter Data
 static uint16_t filter_buffer[FILTER_SIZE] = {0};  // Cirkulær sample buffer
-static uint8_t filter_index = 0;     // Aktuel buffer position
-static uint32_t filter_sum = 0;      // Løbende sum af samples
-static uint8_t filter_count = 0;     // Antal aktive samples
+static uint8_t filter_index = 0;    // Aktuel buffer position
+static uint32_t filter_sum = 0;     // Løbende sum af samples
+static uint8_t filter_count = 0;    // Antal aktive samples
 
 /****************************************************************************
 * Data Strukturer til Display Formattering
@@ -123,14 +117,6 @@ uint16_t diff(uint16_t a, uint16_t b)
     // Returner positiv forskel mellem to værdier
     // Bruges til at detektere signifikante ændringer
     return (a > b) ? (a - b) : (b - a);
-}
-
-// ADC til Spændings Konvertering
-float adc_to_voltage(uint16_t adc_value)
-{
-    // Konverter 12-bit ADC værdi til aktuel spænding
-    // Bruger VFS (3.3V) som reference
-    return (float)adc_value * VFS / ADC_MAX_VALUE;
 }
 
 /****************************************************************************
@@ -195,9 +181,6 @@ void timer_init(void)
     TA0CCR0 = 3999;                     // Set period
     TA0CCTL0 = CCIE;                    // Enable interrupt
 
-    // Timer A1 Konfiguration (PWM Generator)
-    TA1CTL = MC_0;                      // Stop timer først
-    
     // PWM Setup
     TA1CCR0 = TA1CCR0_VALUE;           // PWM periode (12-bit)
     TA1CCTL1 = OUTMOD_7;               // Reset/Set PWM mode
@@ -211,7 +194,6 @@ void timer_init(void)
     // PWM Output Setup - Updated for MSP430F5529
     P2DIR |= BIT0;                     // P2.0 som output
     P2SEL |= BIT0;                     // P2.0 til PWM funktion (TA1.1)
-    P2OUT &= ~BIT0;                    // Start lav
 }
 
 /****************************************************************************
@@ -338,8 +320,21 @@ void TIMER0_A0_ISR(void) {
 * System Initialisering
 ****************************************************************************/
 
-  void init_SMCLK_XT2();
-  void init_setup(void)
+void init_SMCLK_XT2()
+{
+    P5SEL |= BIT2+BIT3;                       // Port select XT2
+    UCSCTL6 &= ~XT2OFF;                       // Enable XT2
+    UCSCTL4 = SELA_2 | SELS_5 | SELM_5;     // Konfigurer alle clock kilder på én gang
+    // Loop until XT1,XT2 & DCO stabilizes - in this case loop until XT2 settles
+    do
+    {
+        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG); // Clear XT2,XT1,DCO fault flags
+        SFRIFG1 &= ~OFIFG;                          // Clear fault flags
+    }
+    while (SFRIFG1&OFIFG);                   // Test oscillator fault flag
+}
+
+void init_setup(void)
 {
     // Basis System Protection
     WDTCTL = WDTPW | WDTHOLD;         // Stop watchdog timer
@@ -350,6 +345,7 @@ void TIMER0_A0_ISR(void) {
     adc_init();                       // Setup ADC system
     timer_init();                     // Setup timere
     init_SMCLK_XT2();
+
     // Display Layout Setup
     ssd1306_clearDisplay();
     ssd1306_printText(LABEL_X_POS, ADC_Y_POS, "ADC Value:");
@@ -358,26 +354,6 @@ void TIMER0_A0_ISR(void) {
     
     // Enable Interrupts
     __bis_SR_register(GIE);           // Global interrupt enable
-}
-
-void init_SMCLK_XT2()
-{
-    WDTCTL = WDTPW|WDTHOLD; // Stop watchdog timer
-    P5SEL |= BIT2+BIT3;                       // Port select XT2
-    UCSCTL6 &= ~XT2OFF;                       // Enable XT2
-    UCSCTL4 |= SELA_2;                        // ACLK=REFO,SMCLK=DCO,MCLK=DCO
-    UCSCTL4 |= SELS_5 + SELM_5;               // SMCLK=MCLK=XT2
-    // Loop until XT1,XT2 & DCO stabilizes - in this case loop until XT2 settles
-    do
-    {
-        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
-
-                                           // Clear XT2,XT1,DCO fault flags
-
-        SFRIFG1 &= ~OFIFG;                      // Clear fault flags
-
-    }
-    while (SFRIFG1&OFIFG);                   // Test oscillator fault flag
 }
 
 /****************************************************************************
@@ -435,9 +411,7 @@ int main(void)
             
             // Reset flag og tilføj delay
             adc_flag = 0;
-            __delay_cycles(40);        // 1ms delay ved 4MHz
+            __delay_cycles(4000);      // 1ms delay ved 4MHz
         }
     }
-    
-    return 0;
 }
