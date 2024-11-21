@@ -217,6 +217,5 @@ int main(void) {
             __delay_cycles(10000);     // Stability delay
         }
     }
-    
     return 0;
 }
