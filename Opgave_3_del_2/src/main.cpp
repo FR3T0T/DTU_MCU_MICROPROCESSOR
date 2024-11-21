@@ -312,7 +312,8 @@ void ADC12_ISR(void)
 
 // Timer A0 Overflow Interrupt (ADC Trigger)
 __attribute__((interrupt(TIMER0_A0_VECTOR)))
-void TIMER0_A0_ISR(void) {
+void TIMER0_A0_ISR(void)
+{
     ADC12CTL0 |= ADC12ENC | ADC12SC;  // Start ny ADC konversion
 }
 

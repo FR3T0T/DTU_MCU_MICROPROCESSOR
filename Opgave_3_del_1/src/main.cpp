@@ -48,7 +48,7 @@ char display_text[32]; // Display tekst buffer
 ****************************************************************************/
 void init_ports()
 {
-    // Port Select Konfiguration
+        // Port Select Konfiguration
     P6SEL = 0x00;      // Port 6 som digital I/O
     P7SEL = 0;         // Port 7 som digital I/O
     
@@ -70,7 +70,6 @@ void init_ports()
 ****************************************************************************/
 void init_SMCLK_XT2()
 {
-    WDTCTL = WDTPW | WDTHOLD;               // Stop watchdog timer
     P5SEL |= BIT2 + BIT3;                   // XT2 krystal pins
     UCSCTL6 &= ~XT2OFF;                     // Enable XT2
     UCSCTL4 = SELA_2 | SELS_5 | SELM_5;     // Konfigurer alle clock kilder på én gang
@@ -131,10 +130,9 @@ uint16_t calculate_voltage_mv(uint8_t duty_cycle)
 }
 
 /****************************************************************************
-* Interrupt Service Routine for Timer A1
+* Flytning af interrupt logik til main loop
 ****************************************************************************/
-#pragma vector = TIMER1_A0_VECTOR
-__interrupt void Timer1_A0_ISR(void)
+void handle_interrupt()
 {
     // Læs og inverter DIP switch status
     uint8_t dip_value = ~((P6IN & 0x7F) | ((P7IN & BIT0) << 7));
@@ -144,15 +142,10 @@ __interrupt void Timer1_A0_ISR(void)
     {
         new_dip_value = dip_value;
         update_needed = 1; // Sæt flag for opdatering
-
-        // Exit fra low-power mode
-        __bic_SR_register_on_exit(LPM0_bits);
     }
 }
 
-/****************************************************************************
-* Hovedprogram
-****************************************************************************/
+/* Opdatering af hovedløkke til at kalde interrupt-handler */
 int main()
 {
     /* Initial system setup */
@@ -178,6 +171,8 @@ int main()
     /* Hovedløkke */
     while (1)
     {
+        handle_interrupt();
+
         if (update_needed)
         {
             // Sikre atomar adgang til shared variables
