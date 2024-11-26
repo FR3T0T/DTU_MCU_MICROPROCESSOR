@@ -1,3 +1,35 @@
+/*******************************************************************************
+* Co-Pilot, Chat-GPT & Claude AI er blevet brugt til fejlfinding og hjælp.
+*
+* DEL 4
+* Motor Driver og Encoder med PWM Kontrol og OLED Display
+*
+* Systemformål:
+* - Læser analog input via ADC fra potentiometer
+* - Genererer PWM signal med 10-bit opløsning (0-1023)
+* - Styrer DC-motor hastighed via MOSFET
+* - Viser real-time målinger på OLED display:
+*   * ADC værdi (0-1023)
+*   * PWM duty cycle (0-100%)
+*   * Spænding (0-3.3V)
+*
+* Hardware Konfiguration:
+* - MSP430 mikrocontroller
+* - ADC input på P7.0 fra 10k potentiometer
+* - PWM output på P2.0 til MOSFET gate
+* - MOSFET IRF530 som motor driver
+* - Beskyttelsesdiode 1N4006 over motor
+* - OLED display via I2C
+* - Ekstern motorforsyning (12V)
+*
+* Specielle funktioner:
+* - 10-bit ADC opløsning
+* - PWM frekvens ~10kHz ved 20MHz SMCLK
+* - Digital filtrering for stabil motorstyring
+* - Realtids display opdatering
+*
+* Udviklingsplatform: MSP430F5529 LaunchPad
+*******************************************************************************/
 #include <Arduino.h>
 #include "i2c.h"
 #include "ssd1306.h"
@@ -8,12 +40,7 @@
 
 /****************************************************************************
 * System Konstanter og Konfiguration
-****************************************************************************/
-#define MAX_DIGITS 6        
-#define VOLT_DIGITS 8       
-#define DUTY_DIGITS 8       
-#define CHAR_WIDTH 6        
-
+****************************************************************************/ 
 #define FILTER_SIZE 16      
 #define ADC_THRESHOLD 3     
 #define TA1CCR0_VALUE 1024  // 10-bit resolution for PWM
@@ -21,8 +48,8 @@
 #define LABEL_X_POS 0       
 #define VALUE_X_POS 72      
 #define ADC_Y_POS 0         
-#define PWM_Y_POS 2   
-#define VOLT_Y_POS 4   
+#define PWM_Y_POS 1   
+#define VOLT_Y_POS 2   
 
 /****************************************************************************
 * Globale Variable og Buffere
@@ -33,7 +60,6 @@ volatile uint8_t adc_flag = 0;
 static uint16_t filter_buffer[FILTER_SIZE] = {0};  
 static uint8_t filter_index = 0;    
 static uint32_t filter_sum = 0;     
-static uint8_t filter_count = 0;    
 
 /****************************************************************************
 * Filter Functions
@@ -43,8 +69,7 @@ uint16_t filter_adc(uint16_t new_sample) {
     filter_buffer[filter_index] = new_sample;
     filter_sum += new_sample;
     filter_index = (filter_index + 1) % FILTER_SIZE;
-    if (filter_count < FILTER_SIZE) filter_count++;
-    return (uint16_t)(filter_sum / filter_count);
+    return (uint16_t)(filter_sum / FILTER_SIZE);  // Altid divider med FILTER_SIZE
 }
 
 uint16_t diff(uint16_t a, uint16_t b) {
@@ -54,11 +79,8 @@ uint16_t diff(uint16_t a, uint16_t b) {
 /****************************************************************************
 * Hardware Initialization
 ****************************************************************************/
-void init_SMCLK_25MHz() {
-    WDTCTL = WDTPW | WDTHOLD; 
-
-    P5SEL |= BIT2 + BIT3; 
-    P5SEL |= BIT4 + BIT5;
+void init_SMCLK_20MHz() {  // Rettet navn til at matche faktisk frekvens
+    P5SEL |= BIT2 + BIT3 + BIT4 + BIT5;
     
     __bis_SR_register(SCG0); 
     UCSCTL0 = 0x0000;        
@@ -79,9 +101,6 @@ void init_SMCLK_25MHz() {
 void adc_init(void) {
     ADC12CTL0 &= ~ADC12ENC;            // Disable ADC
     
-    // Reset ADC12CTL0 to known state
-    ADC12CTL0 = 0x0000;
-    
     ADC12CTL0 = ADC12SHT0_3            // Sample time
               | ADC12ON                 // Turn on ADC12
               | ADC12MSC;              // Multiple sample and conversion
@@ -90,18 +109,12 @@ void adc_init(void) {
               | ADC12CONSEQ_2          // Repeat single channel
               | ADC12SSEL_0;           // ADC12OSC clock source
               
-    // Explicitly set 10-bit resolution
     ADC12CTL2 = ADC12RES_1;            // 10-bit resolution (0-1023)
     
-    // Clear any previous channel settings
-    ADC12MCTL0 = 0x0000;
-    
-    // Set input channel to A12 (P7.0)
     ADC12MCTL0 = ADC12INCH_12          // Input channel A12
                 | ADC12SREF_0;         // VR+ = AVCC and VR- = AVSS
     
-    // Clear any pending interrupts
-    ADC12IFG = 0x0000;
+    ADC12IFG = 0x0000;                 // Clear any pending interrupts
     
     ADC12IE |= ADC12IE0;               // Enable ADC12 interrupt
     
@@ -112,16 +125,15 @@ void adc_init(void) {
 }
 
 void timer_init(void) {
-    // PWM Setup
     P2DIR |= BIT0;                     // P2.0 output
     P2SEL |= BIT0;                     // P2.0 PWM function
     
     TA1CCR0 = 1024;                    // PWM Period (10-bit)
-    TA1CCTL1 = OUTMOD_7;               // Reset/Set PWM mode
+    TA1CCTL1 = OUTMOD_2;               // Reset/Set PWM mode
     TA1CCR1 = 0;                       // Initial duty cycle 0%
     
     TA1CTL = TASSEL_2                  // SMCLK source
-           | MC_1                      // Up mode
+           | MC_3                      // Up mode
            | TACLR;                    // Clear timer
 }
 
@@ -132,8 +144,7 @@ void update_display(uint16_t adc_val, uint16_t duty, float voltage) {
     char str[16];
     
     // ADC value
-    uint16_t bounded_adc = adc_val & 0x3FF;
-    snprintf(str, 5, "%4u", bounded_adc);
+    snprintf(str, 5, "%4u", adc_val);
     ssd1306_printText(VALUE_X_POS, ADC_Y_POS, str);
     
     // Duty cycle
@@ -142,9 +153,8 @@ void update_display(uint16_t adc_val, uint16_t duty, float voltage) {
     
     // Voltage - split i heltal og decimal del
     int volt_whole = (int)voltage;
-    int volt_frac = (int)((voltage - volt_whole) * 100); // Get 2 decimal places
+    int volt_frac = (int)((voltage - volt_whole) * 100);
     
-    // Format voltage med både heltal og decimaler
     snprintf(str, 8, "%d.%02dV", volt_whole, volt_frac);
     ssd1306_printText(VALUE_X_POS, VOLT_Y_POS, str);
 }
@@ -155,7 +165,6 @@ void update_display(uint16_t adc_val, uint16_t duty, float voltage) {
 #pragma vector = ADC12_VECTOR
 __interrupt void ADC12_ISR(void) {
     if(ADC12IFG & BIT0) {
-        // Ensure we don't exceed 10-bit range (0-1023)
         adc_data = ADC12MEM0 & 0x3FF;  // Mask to 10 bits
         adc_flag = 1;
         ADC12IFG &= ~BIT0;
@@ -169,15 +178,13 @@ int main(void) {
     WDTCTL = WDTPW | WDTHOLD;         // Stop watchdog timer
     
     // Initialize all systems
-    init_SMCLK_25MHz();               // Clock setup
-    __delay_cycles(100000);
+    init_SMCLK_20MHz();               // Clock setup
+    
+    // Single delay after alle initialiseringer
+    __delay_cycles(300000);           // Combined delay for all inits
     
     i2c_init();                       // I2C for display
-    __delay_cycles(100000);
-    
     ssd1306_init();                   // Display init
-    __delay_cycles(100000);
-    
     timer_init();                     // PWM setup
     adc_init();                       // ADC setup
     
@@ -195,11 +202,10 @@ int main(void) {
     // Main loop
     while(1) {
         if (adc_flag) {
-            uint16_t bounded_adc = adc_data & 0x3FF;  // Ensure 10-bit value
-            uint16_t filtered_value = filter_adc(bounded_adc);
+            uint16_t filtered_value = filter_adc(adc_data);
             
             if (diff(filtered_value, last_filtered_value) > ADC_THRESHOLD) {
-                // Update PWM with bounded value
+                // Update PWM with filtered value
                 TA1CCR1 = filtered_value;
                 
                 // Calculate display values
