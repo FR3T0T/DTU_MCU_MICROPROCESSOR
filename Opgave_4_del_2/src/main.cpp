@@ -77,52 +77,75 @@ void init_pwm(void) {
            | TACLR;                   
 }
 
+// Tilføj debug flag
+volatile uint16_t debug_capture1 = 0;
+volatile uint16_t debug_capture2 = 0;
+volatile uint32_t interrupt_count1 = 0;
+volatile uint32_t interrupt_count2 = 0;
+
 void init_timerA0_capture(void) {
-    TA0CTL = TASSEL_1    
-           + MC_2        
-           + TACLR;      
+    // Stop timer først
+    TA0CTL = TACLR;      // Clear timer
+    
+    // Konfigurer inputs med pull-up modstande
+    P1DIR &= ~(BIT2 | BIT3);    // Input mode
+    P1REN |= (BIT2 | BIT3);     // Enable pull-up/down
+    P1OUT |= (BIT2 | BIT3);     // Set pull-up
+    P1SEL |= (BIT2 | BIT3);     // Timer funktion
+    
+    // Konfigurer capture mode for CCR1 (F1 signal på P1.2)
+    TA0CCTL1 = CM_1      // Capture på stigende flanke kun
+             + CCIS_0    // CCIxA
+             + CAP       // Capture mode
+             + CCIE      // Interrupt enable
+             + SCS;      // Synchronous capture
 
-    P1DIR &= ~(BIT2 | BIT3);    
-    P1SEL |= (BIT2 | BIT3);     
+    // Konfigurer capture mode for CCR2 (F2 signal på P1.3)
+    TA0CCTL2 = CM_1      // Capture på stigende flanke kun
+             + CCIS_0    // CCIxA
+             + CAP       // Capture mode
+             + CCIE      // Interrupt enable
+             + SCS;      // Synchronous capture
 
-    TA0CCTL1 = CM_3     
-             + CCIS_0   
-             + CAP      
-             + CCIE     
-             + SCS;     
-
-    TA0CCTL2 = CM_3     
-             + CCIS_0   
-             + CAP      
-             + CCIE     
-             + SCS;     
-
-    P2DIR |= (BIT2 | BIT3);    
-    P2OUT &= ~(BIT2 | BIT3);   
+    // Start timer med ACLK
+    TA0CTL = TASSEL_1    // ACLK = 32.768 kHz
+           + MC_2        // Continuous mode
+           + TACLR;      // Clear timer igen ved start
+             
+    // Debug LEDs
+    P2DIR |= (BIT2 | BIT3);     // Output mode for LEDs
+    P2OUT &= ~(BIT2 | BIT3);    // Start med LEDs slukket
 }
 
 void init_adc(void) {
-    ADC12CTL0 &= ~ADC12ENC;           
+    ADC12CTL0 &= ~ADC12ENC;           // Disable ADC12
+
+    // Brug intern 2.5V reference
+    ADC12CTL0 = ADC12SHT0_3           // Sample and hold time
+               | ADC12ON               // Turn on ADC12
+               | ADC12MSC              // Multiple sample and conversion
+               | ADC12REF2_5V          // Turn on 2.5V reference
+               | ADC12REFON;           // Turn on reference generator
+               
+    ADC12CTL1 = ADC12SHP              // Use sampling timer
+               | ADC12CONSEQ_2         // Repeat single channel
+               | ADC12SSEL_0;          // ADC12OSC as clock source
+               
+    ADC12CTL2 = ADC12RES_1;           // 10-bit resolution
     
-    ADC12CTL0 = ADC12SHT0_3           
-               | ADC12ON               
-               | ADC12MSC;            
-              
-    ADC12CTL1 = ADC12SHP              
-               | ADC12CONSEQ_2         
-               | ADC12SSEL_0;          
-              
-    ADC12CTL2 = ADC12RES_1;           
+    // Brug intern reference i stedet for AVCC
+    ADC12MCTL0 = ADC12INCH_12         // Input channel A12
+                | ADC12SREF_1;         // Use internal reference
     
-    ADC12MCTL0 = ADC12INCH_12         
-                | ADC12SREF_0;        
+    ADC12IFG = 0x0000;                // Clear interrupt flags
+    ADC12IE |= ADC12IE0;              // Enable ADC12IFG.0
+    P7SEL |= BIT0;                    // Select A12 input
     
-    ADC12IFG = 0x0000;                
-    ADC12IE |= ADC12IE0;              
-    P7SEL |= BIT0;                    
+    // Vent på at referencen stabiliserer
+    __delay_cycles(75);
     
-    ADC12CTL0 |= ADC12ENC;            
-    ADC12CTL0 |= ADC12SC;             
+    ADC12CTL0 |= ADC12ENC;            // Enable conversions
+    ADC12CTL0 |= ADC12SC;             // Start conversion
 }
 
 uint16_t filter_adc(uint16_t new_sample) {
@@ -138,44 +161,44 @@ uint16_t diff(uint16_t a, uint16_t b) {
 }
 
 float calculate_frequency(uint16_t capture_value) {
-    if (capture_value == 0) return 0.0f;
-    return (32768.0f * 2.0f) / (float)capture_value;
+    if (capture_value == 0 || capture_value > 32768) return 0.0f;
+    // Nu kun én flanke, så ingen *2
+    return 32768.0f / (float)capture_value;
 }
 
+// Opdater display funktionen for korrekt visning
 void update_display(uint16_t adc_val, uint16_t duty, float voltage, float freq1, float freq2) {
     char str[32];
     
-    // ADC værdi (uændret)
-    snprintf(str, sizeof(str), "ADC: %4u", adc_val);
-    ssd1306_printText(0, ADC_Y_POS, str);
+    // ADC og PWM display som før...
+    snprintf(str, sizeof(str), "ADC: %4u", 1023 - adc_val);
+    ssd1306_printText(LABEL_X_POS, ADC_Y_POS, str);
     
-    // PWM duty cycle (uændret)
-    snprintf(str, sizeof(str), "PWM: %3u%%", duty);
-    ssd1306_printText(0, PWM_Y_POS, str);
+    uint16_t actual_duty = 100 - duty;
+    snprintf(str, sizeof(str), "PWM: %3u%%", actual_duty);
+    ssd1306_printText(LABEL_X_POS, PWM_Y_POS, str);
     
-    // Spænding - konverter til hele og decimal del
-    int16_t volt_whole = (int16_t)voltage;
-    int16_t volt_frac = (int16_t)((voltage - volt_whole) * 100);
+    // Voltage display som før...
+    float real_voltage = 3.3f * (float)(1023 - adc_val) / 1023.0f;
+    int16_t volt_whole = (int16_t)real_voltage;
+    int16_t volt_frac = (int16_t)((real_voltage - volt_whole) * 100);
     snprintf(str, sizeof(str), "V: %d.%02dV", volt_whole, volt_frac);
-    ssd1306_printText(0, VOLT_Y_POS, str);
+    ssd1306_printText(LABEL_X_POS, VOLT_Y_POS, str);
     
-    // Frekvens 1 - konverter til hele og decimal del
-    int16_t freq1_whole = (int16_t)freq1;
-    int16_t freq1_frac = (int16_t)((freq1 - freq1_whole) * 10);
-    snprintf(str, sizeof(str), "F1: %4d.%1dHz", freq1_whole, freq1_frac);
-    ssd1306_printText(0, ENC1_Y_POS, str);
+    // Frekvens display med debug info
+    snprintf(str, sizeof(str), "F1:%4.1fHz C:%u", freq1, debug_capture1);
+    ssd1306_printText(LABEL_X_POS, ENC1_Y_POS, str);
     
-    // Frekvens 2 - konverter til hele og decimal del
-    int16_t freq2_whole = (int16_t)freq2;
-    int16_t freq2_frac = (int16_t)((freq2 - freq2_whole) * 10);
-    snprintf(str, sizeof(str), "F2: %4d.%1dHz", freq2_whole, freq2_frac);
-    ssd1306_printText(0, ENC2_Y_POS, str);
+    snprintf(str, sizeof(str), "F2:%4.1fHz C:%u", freq2, debug_capture2);
+    ssd1306_printText(LABEL_X_POS, ENC2_Y_POS, str);
 }
 
+// ADC interrupt - inverter værdien med det samme
 #pragma vector = ADC12_VECTOR
 __interrupt void ADC12_ISR(void) {
     if(ADC12IFG & BIT0) {
-        adc_data = ADC12MEM0 & 0x3FF;  
+        uint16_t raw_adc = ADC12MEM0 & 0x3FF;  // Få 10-bit værdi
+        adc_data = 1023 - raw_adc;             // Inverter værdien
         adc_flag = 1;
         ADC12IFG &= ~BIT0;
     }
@@ -187,17 +210,29 @@ __interrupt void Timer_A1_ISR(void) {
     static uint16_t last2 = 0;
     
     switch(TA0IV) {
-        case 0x02:  // CCR1 interrupt (P1.2)
-            captured_value1 = TA0CCR1 - last1;
+        case 0x02:  // CCR1 interrupt (P1.2 - F1)
+            interrupt_count1++;  // Tæl interrupts
+            if (TA0CCR1 >= last1) {  // Check for overflow
+                captured_value1 = TA0CCR1 - last1;
+            } else {
+                captured_value1 = (65535 - last1) + TA0CCR1;
+            }
+            debug_capture1 = captured_value1;  // Gem til debug
             last1 = TA0CCR1;
-            P2OUT ^= BIT2;  
+            P2OUT ^= BIT2;   // Toggle LED1
             capture_flag1 = 1;
             break;
             
-        case 0x04:  // CCR2 interrupt (P1.3)
-            captured_value2 = TA0CCR2 - last2;
+        case 0x04:  // CCR2 interrupt (P1.3 - F2)
+            interrupt_count2++;  // Tæl interrupts
+            if (TA0CCR2 >= last2) {  // Check for overflow
+                captured_value2 = TA0CCR2 - last2;
+            } else {
+                captured_value2 = (65535 - last2) + TA0CCR2;
+            }
+            debug_capture2 = captured_value2;  // Gem til debug
             last2 = TA0CCR2;
-            P2OUT ^= BIT3;  
+            P2OUT ^= BIT3;   // Toggle LED2
             capture_flag2 = 1;
             break;
     }
