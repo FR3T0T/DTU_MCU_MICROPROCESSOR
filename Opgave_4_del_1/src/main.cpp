@@ -64,7 +64,8 @@ static uint32_t filter_sum = 0;
 /****************************************************************************
 * Filter Functions
 ****************************************************************************/
-uint16_t filter_adc(uint16_t new_sample) {
+uint16_t filter_adc(uint16_t new_sample)
+{
     filter_sum -= filter_buffer[filter_index];
     filter_buffer[filter_index] = new_sample;
     filter_sum += new_sample;
@@ -72,14 +73,16 @@ uint16_t filter_adc(uint16_t new_sample) {
     return (uint16_t)(filter_sum / FILTER_SIZE);  // Altid divider med FILTER_SIZE
 }
 
-uint16_t diff(uint16_t a, uint16_t b) {
+uint16_t diff(uint16_t a, uint16_t b)
+{
     return (a > b) ? (a - b) : (b - a);
 }
 
 /****************************************************************************
 * Hardware Initialization
 ****************************************************************************/
-void init_SMCLK_20MHz() {  // Rettet navn til at matche faktisk frekvens
+void init_SMCLK_20MHz()  // Rettet navn til at matche faktisk frekvens
+{
     P5SEL |= BIT2 + BIT3 + BIT4 + BIT5;
     
     __bis_SR_register(SCG0); 
@@ -88,17 +91,20 @@ void init_SMCLK_20MHz() {  // Rettet navn til at matche faktisk frekvens
     UCSCTL2 = FLLD_0 + 610;  // For 20MHz
     __bic_SR_register(SCG0); 
 
-    do {
+    do
+    {
         UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG); 
         SFRIFG1 &= ~OFIFG;                          
-    } while (SFRIFG1 & OFIFG); 
+    }
+    while (SFRIFG1 & OFIFG); 
 
     UCSCTL3 = SELREF__REFOCLK;                            
     UCSCTL4 = SELA__XT1CLK | SELS__DCOCLK | SELM__DCOCLK; 
     UCSCTL5 = DIVS__1;                                    
 }
 
-void adc_init(void) {
+void adc_init(void)
+{
     ADC12CTL0 &= ~ADC12ENC;            // Disable ADC
     
     ADC12CTL0 = ADC12SHT0_3            // Sample time
@@ -124,7 +130,8 @@ void adc_init(void) {
     ADC12CTL0 |= ADC12SC;              // Start conversion
 }
 
-void timer_init(void) {
+void timer_init(void)
+{
     P2DIR |= BIT0;                     // P2.0 output
     P2SEL |= BIT0;                     // P2.0 PWM function
     
@@ -140,7 +147,8 @@ void timer_init(void) {
 /****************************************************************************
 * Display Functions
 ****************************************************************************/
-void update_display(uint16_t adc_val, uint16_t duty, float voltage) {
+void update_display(uint16_t adc_val, uint16_t duty, float voltage)
+{
     char str[16];
     
     // ADC value
@@ -163,8 +171,10 @@ void update_display(uint16_t adc_val, uint16_t duty, float voltage) {
 * Interrupt Service Routines
 ****************************************************************************/
 #pragma vector = ADC12_VECTOR
-__interrupt void ADC12_ISR(void) {
-    if(ADC12IFG & BIT0) {
+__interrupt void ADC12_ISR(void)
+{
+    if(ADC12IFG & BIT0)
+    {
         adc_data = ADC12MEM0 & 0x3FF;  // Mask to 10 bits
         adc_flag = 1;
         ADC12IFG &= ~BIT0;
@@ -174,7 +184,8 @@ __interrupt void ADC12_ISR(void) {
 /****************************************************************************
 * Main Function
 ****************************************************************************/
-int main(void) {
+int main(void)
+{
     WDTCTL = WDTPW | WDTHOLD;         // Stop watchdog timer
     
     // Initialize all systems
@@ -200,11 +211,14 @@ int main(void) {
     uint16_t last_filtered_value = 0;
     
     // Main loop
-    while(1) {
-        if (adc_flag) {
+    while(1)
+    {
+        if (adc_flag)
+        {
             uint16_t filtered_value = filter_adc(adc_data);
             
-            if (diff(filtered_value, last_filtered_value) > ADC_THRESHOLD) {
+            if (diff(filtered_value, last_filtered_value) > ADC_THRESHOLD)
+            {
                 // Update PWM with filtered value
                 TA1CCR1 = filtered_value;
                 
