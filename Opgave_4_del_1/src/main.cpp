@@ -1,7 +1,7 @@
 /*******************************************************************************
 * Co-Pilot, Chat-GPT & Claude AI er blevet brugt til fejlfinding og hjælp.
 *
-* DEL 4
+* DEL 1 & 1B
 * Motor Driver og Encoder med PWM Kontrol og OLED Display
 *
 * Systemformål:
@@ -83,24 +83,28 @@ uint16_t diff(uint16_t a, uint16_t b)
 ****************************************************************************/
 void init_SMCLK_20MHz()  // Rettet navn til at matche faktisk frekvens
 {
-    P5SEL |= BIT2 + BIT3 + BIT4 + BIT5;
+    P5SEL |= BIT2 + BIT3 + BIT4 + BIT5;  // Select XT2 for SMCLK (Pins 5.2 and 5.3)
     
-    __bis_SR_register(SCG0); 
-    UCSCTL0 = 0x0000;        
-    UCSCTL1 = DCORSEL_7;     
-    UCSCTL2 = FLLD_0 + 610;  // For 20MHz
-    __bic_SR_register(SCG0); 
+     // Configure DCO to 25 MHz
+    __bis_SR_register(SCG0); // Disable FLL control loop
+    UCSCTL0 = 0x0000;        // Set lowest possible DCOx and MODx
+    UCSCTL1 = DCORSEL_7;     // Select DCO range (DCORSEL_7 for max range)
+    UCSCTL2 = FLLD_0 + 610;  // FLLD = 1, Multiplier N = 762 for ~25 MHz DCO   - 610 for 20Mhz
 
+    //calculated by f DCOCLK  =32.768kHz×610=20MHz
+    __bic_SR_register(SCG0); // Enable FLL control loop
+
+    // Loop until XT2, XT1, and DCO stabilize
     do
     {
-        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG); 
-        SFRIFG1 &= ~OFIFG;                          
+        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);         // Clear fault flags
+        SFRIFG1 &= ~OFIFG;                                  // Clear oscillator fault flags
     }
-    while (SFRIFG1 & OFIFG); 
+    while (SFRIFG1 & OFIFG);                                // Wait until stable
 
-    UCSCTL3 = SELREF__REFOCLK;                            
-    UCSCTL4 = SELA__XT1CLK | SELS__DCOCLK | SELM__DCOCLK; 
-    UCSCTL5 = DIVS__1;                                    
+    UCSCTL3 = SELREF__REFOCLK;                              // Set FLL reference to REFO           
+    UCSCTL4 = SELA__XT1CLK | SELS__DCOCLK | SELM__DCOCLK;   // Set ACLK = XT1; SMCLK = DCO; MCLK = DCO
+    UCSCTL5 = DIVS__1;                                      // Set SMCLK divider to 1 (no division)
 }
 
 void adc_init(void)
