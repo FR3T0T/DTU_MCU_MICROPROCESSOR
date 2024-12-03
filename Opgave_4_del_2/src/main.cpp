@@ -1,6 +1,28 @@
 /****************************************************************************
-* Includes og Header Files
-****************************************************************************/
+ * MSP430 Dual Frequency Measurement System
+ * 
+ * Dette program måler frekvensen på to encodere ved hjælp af Timer A0 capture
+ * og viser resultaterne på et SSD1306 OLED display. Systemet kører på en
+ * MSP430 mikrocontroller konfigureret til 20MHz.
+ * 
+ * Hardware forbindelser:
+ * Encodere:
+ * - Encoder 1 Signal: P1.2 (Timer A0.1 capture input)
+ * - Encoder 2 Signal: P1.3 (Timer A0.2 capture input)
+ * 
+ * Display (I2C):
+ * - SCL: P3.0 (I2C clock)
+ * - SDA: P3.1 (I2C data)
+ * 
+ * Debug LEDs:
+ * - P6.0: Heartbeat LED (blinker kontinuerligt)
+ * - P6.1: Encoder 1 aktivitets indikator
+ * - P6.2: Encoder 2 aktivitets indikator
+ * 
+ * Encoder outputs:
+ * - P2.2: Toggle ved hver Encoder 1 interrupt
+ * - P2.3: Toggle ved hver Encoder 2 interrupt
+ ****************************************************************************/
 #include <msp430.h>
 #include "i2c.h"
 #include "ssd1306.h"
@@ -13,17 +35,11 @@
 ****************************************************************************/
 // Display relaterede konstanter
 #define MAX_DIGITS 8          // Maksimalt antal cifre for numeriske værdier
-#define CHAR_WIDTH 6          // Bredden af hver karakter i pixels
 #define LABEL_X_POS 0        // Start X position for labels
-#define VALUE_X_POS 72       // Start X position for værdier
 
 // Display linje positioner
 #define FREQ1_LINE 0         // Linje for frekvens 1
-#define CV1_LINE 1           // Linje for captured value 1
-#define PULSE1_LINE 2        // Linje for pulse count 1
 #define FREQ2_LINE 4         // Linje for frekvens 2
-#define CV2_LINE 5           // Linje for captured value 2
-#define PULSE2_LINE 6        // Linje for pulse count 2
 
 /****************************************************************************
 * Globale Variable
@@ -38,9 +54,11 @@ volatile uint8_t t_flag2 = 0;          // Flag for ny måling på encoder 2
 * Hjælpefunktioner til String Håndtering
 ****************************************************************************/
 // Konverterer et tal til en string
-void number_to_string(uint32_t value, char* str) {
+void number_to_string(uint32_t value, char* str)
+{
     // Håndter special case for 0
-    if (value == 0) {
+    if (value == 0)
+    {
         str[0] = '0';
         str[1] = '\0';
         return;
@@ -49,7 +67,8 @@ void number_to_string(uint32_t value, char* str) {
     // Konverter tal til string, et ciffer ad gangen
     char temp[MAX_DIGITS + 1];
     uint8_t i = 0;
-    while (value > 0 && i < MAX_DIGITS) {
+    while (value > 0 && i < MAX_DIGITS)
+    {
         temp[i++] = '0' + (value % 10);
         value /= 10;
     }
@@ -57,7 +76,8 @@ void number_to_string(uint32_t value, char* str) {
     // Vend string om (cifre er baglæns)
     uint8_t j;
     uint8_t len = i;
-    for (j = 0; j < i; j++) {
+    for (j = 0; j < i; j++)
+    {
         str[j] = temp[len - 1 - j];
     }
     str[j] = '\0';  // Afslut med null-terminator
@@ -67,7 +87,8 @@ void number_to_string(uint32_t value, char* str) {
 * System Initialisering
 ****************************************************************************/
 // Initialiserer system clock til 20MHz
-void init_SMCLK_20MHz(void) {
+void init_SMCLK_20MHz(void)
+{
     P5SEL |= BIT2 + BIT3 + BIT4 + BIT5;  // Vælg XT2 til SMCLK
     
     // Konfigurer DCO til 20 MHz
@@ -79,10 +100,12 @@ void init_SMCLK_20MHz(void) {
     __bic_SR_register(SCG0);              // Aktiver FLL igen
 
     // Vent på oscillator stabilitet
-    do {
+    do
+    {
         UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
         SFRIFG1 &= ~OFIFG;
-    } while (SFRIFG1 & OFIFG);
+    }
+    while (SFRIFG1 & OFIFG);
 
     // Konfigurer clock kilder
     UCSCTL3 = SELREF__REFOCLK;
@@ -91,7 +114,8 @@ void init_SMCLK_20MHz(void) {
 }
 
 // Initialiserer Timer A0 til capture mode
-void init_timerA0_capture(void) {
+void init_timerA0_capture(void)
+{
     // Timer A0 konfiguration
     TA0CTL = TASSEL_1     // ACLK (32768 Hz)
            + MC_2         // Continuous mode
@@ -102,14 +126,14 @@ void init_timerA0_capture(void) {
     P1SEL |= (BIT2 | BIT3);     // Vælg timer funktionalitet
 
     // Capture konfiguration for P1.2 (Encoder 1)
-    TA0CCTL1 = CM_1       // Capture på stigende flanke
+    TA0CCTL1 = CM_3       // Capture på stigende flanke
              + CCIS_0     // CCIxA input signal
              + CAP        // Capture mode
              + CCIE       // Capture interrupt enable
              + SCS;       // Synkroniseret capture
 
     // Capture konfiguration for P1.3 (Encoder 2)
-    TA0CCTL2 = CM_1 + CCIS_0 + CAP + CCIE + SCS;
+    TA0CCTL2 = CM_3 + CCIS_0 + CAP + CCIE + SCS;
 
     // LED setup for debugging
     P6DIR |= BIT0 | BIT1 | BIT2;    // Setup LED pins
@@ -120,13 +144,15 @@ void init_timerA0_capture(void) {
 * Hovedfunktioner
 ****************************************************************************/
 // Beregner frekvensen ud fra capture værdi
-float calculate_frequency(uint16_t capture_value) {
+float calculate_frequency(uint16_t capture_value)
+{
     if (capture_value == 0 || capture_value > 32768) return 0.0f;
     return 32768.0f / (float)capture_value;
 }
 
 // Opdaterer display med alle værdier
-void update_display(float freq1, float freq2) {
+void update_display(float freq1, float freq2)
+{
     char str[32];
     static uint32_t pulse_count1 = 0;
     static uint32_t pulse_count2 = 0;
@@ -136,14 +162,16 @@ void update_display(float freq1, float freq2) {
     if (t_flag2) pulse_count2++;
     
     // Vis kun frekvenser hvis de er gyldige (større end 0)
-    if (freq1 > 0) {
+    if (freq1 > 0)
+    {
         int freq1_whole = (int)freq1;
         int freq1_frac = (int)((freq1 - freq1_whole) * 10);
         snprintf(str, sizeof(str), "F1: %d.%dHz    ", freq1_whole, freq1_frac);
         ssd1306_printText(LABEL_X_POS, FREQ1_LINE, str);
     }
     
-    if (freq2 > 0) {
+    if (freq2 > 0)
+    {
         int freq2_whole = (int)freq2;
         int freq2_frac = (int)((freq2 - freq2_whole) * 10);
         snprintf(str, sizeof(str), "F2: %d.%dHz    ", freq2_whole, freq2_frac);
@@ -155,11 +183,14 @@ void update_display(float freq1, float freq2) {
 * Interrupt Service Rutiner
 ****************************************************************************/
 #pragma vector=TIMER0_A1_VECTOR
-__interrupt void Timer_A1_ISR(void) {
+__interrupt void Timer_A1_ISR(void)
+{
     static unsigned int last1 = 0;
     static unsigned int last2 = 0;
     static int i=0;
-    switch(TA0IV) {
+
+    switch(TA0IV)
+    {
         case 0x02:  // CCR1 interrupt (P1.2)
            
            if(last1>TA0CCR1)
@@ -187,7 +218,8 @@ __interrupt void Timer_A1_ISR(void) {
 /****************************************************************************
 * Main Program
 ****************************************************************************/
-int main(void) {
+int main(void)
+{
     WDTCTL = WDTPW | WDTHOLD;     
     
     init_SMCLK_20MHz();
@@ -212,15 +244,18 @@ int main(void) {
     P2DIR|=BIT2|BIT3;
     
     // Hovedløkke - opdater kun når der er nye data
-    while(1) {
-        if (t_flag1) {
+    while(1)
+    {
+        if (t_flag1)
+        {
             freq1 = calculate_frequency(captured_value1);
             t_flag1 = 0;
             P6OUT &= ~BIT1;
             update_display(freq1, freq2);  // Opdater kun ved nye data
         }
         
-        if (t_flag2) {
+        if (t_flag2)
+        {
             freq2 = calculate_frequency(captured_value2);
             t_flag2 = 0;
             P6OUT &= ~BIT2;
@@ -230,6 +265,5 @@ int main(void) {
         P6OUT ^= BIT0;
         __delay_cycles(50000);
     }
-    
     return 0;
 }
