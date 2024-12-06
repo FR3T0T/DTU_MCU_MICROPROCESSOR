@@ -1,0 +1,381 @@
+#include <msp430.h>
+#include "i2c.h"
+#include "ssd1306.h"
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+
+/****************************************************************************
+ * Konstanter og Konfiguration
+ ****************************************************************************/
+#define LABEL_X_POS 0
+#define F1_LINE 1          // F1 frekvens
+#define F2_LINE 2          // F2 frekvens
+#define PWM_LINE 3         // PWM værdi
+#define XD_LINE 4          // Xd (desired value)
+#define XF_LINE 5          // Xf (faktuelle værdi)
+#define XE_LINE 6          // Xe (error)
+#define FILTER_SIZE 16
+#define ADC_THRESHOLD 3
+#define TA1CCR0_VALUE 1023
+#define MAX_ENCODER_FREQ 1000.0f
+#define VOLTAGE_ADC_CHANNEL 13
+#define NOMINAL_VOLTAGE 12.0f
+#define VOLTAGE_DIVISOR 3.0f
+#define VOLTAGE_COMP_GAIN 0.05f
+#define G_MOTOR 2.0f       // Tilføjet: Reduceret gain til motor kontrol
+
+/****************************************************************************
+ * Globale Variable
+ ****************************************************************************/
+volatile uint16_t captured_value1 = 0;
+volatile uint16_t captured_value2 = 0;
+volatile uint8_t t_flag1 = 0;
+volatile uint8_t t_flag2 = 0;
+volatile float current_speed = 0.0f;
+volatile float target_speed = 0.0f;
+volatile uint16_t adc_data = 0;
+volatile uint8_t adc_flag = 0;
+volatile uint16_t supply_voltage_adc = 0;
+volatile float supply_voltage = 12.0f;
+
+static uint16_t filter_buffer[FILTER_SIZE] = {0};
+static uint8_t filter_index = 0;
+static uint32_t filter_sum = 0;
+float Xe;
+
+/****************************************************************************
+ * Funktioner til ADC filter
+ ****************************************************************************/
+uint16_t filter_adc(uint16_t new_sample)
+{
+    filter_sum -= filter_buffer[filter_index];
+    filter_buffer[filter_index] = new_sample;
+    filter_sum += new_sample;
+    filter_index = (filter_index + 1) % FILTER_SIZE;
+    return (uint16_t)(filter_sum / FILTER_SIZE);
+}
+
+uint16_t diff(uint16_t a, uint16_t b)
+{
+    return (a > b) ? (a - b) : (b - a);
+}
+
+/****************************************************************************
+ * Hardware Initialisering
+ ****************************************************************************/
+void adc_init(void)
+{
+    // Disable ADC12 first
+    ADC12CTL0 &= ~(ADC12ENC | ADC12SC);
+    
+    // Setup ADC12
+    ADC12CTL0 = ADC12ON | ADC12SHT0_3;              // Turn on ADC12, set sampling time
+    ADC12CTL1 = ADC12SHP | ADC12SSEL_3;             // Use sampling timer, select SMCLK
+    ADC12CTL2 = ADC12RES_1 | 0x01;                  // Set 10-bit resolution
+    
+    ADC12MCTL0 = ADC12INCH_12;                      // Select channel A12 (P7.0)
+    
+    // Clear interrupt flags and enable interrupt for MEM0
+    ADC12IFG = 0x0000;
+    ADC12IE = ADC12IE0;
+    
+    // Configure P7.0 as analog input
+    P7SEL |= BIT0;
+    P7DIR &= ~BIT0;  // Tilføjet: Sæt P7.0 som input
+    
+    // Enable and start ADC12
+    ADC12CTL0 |= ADC12ENC;
+}
+
+void timer_init(void)
+{
+    P2DIR |= BIT0;
+    P2SEL |= BIT0;
+    TA1CCR0 = TA1CCR0_VALUE;
+    TA1CCTL1 = OUTMOD_7;
+    TA1CCR1 = 200;
+    TA1CTL = TASSEL_2 | MC_3 | TACLR;  // Ændret MC_1 til MC_3 for up/down mode
+}
+
+void init_timerA0_capture(void)
+{
+    TA0CTL = TASSEL_1 + MC_2 + ID_0;
+    P1DIR &= ~(BIT2 | BIT3);
+    P1SEL |= (BIT2 | BIT3);
+    TA0CCTL1 = CM_3 + CCIS_0 + CAP + CCIE + SCS;
+    TA0CCTL2 = CM_3 + CCIS_0 + CAP + CCIE + SCS;
+    P6DIR |= BIT0 | BIT1 | BIT2;
+    P6OUT |= BIT0;
+}
+
+void init_SMCLK_25MHz()
+{
+    WDTCTL = WDTPW | WDTHOLD;
+    P5SEL |= BIT2 + BIT3;
+    P5SEL |= BIT4 + BIT5;
+    __bis_SR_register(SCG0);
+    UCSCTL0 = 0x0000;
+    UCSCTL1 = DCORSEL_7;
+    UCSCTL2 = FLLD_0 + 610;  // Ændret fra 762 til 610 for at få 20MHz
+    __bic_SR_register(SCG0);
+
+    do
+    {
+        UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
+        SFRIFG1 &= ~OFIFG;
+    } while (SFRIFG1 & OFIFG);
+
+    UCSCTL3 = SELREF__REFOCLK;
+    UCSCTL4 = SELA__XT1CLK | SELS__DCOCLK | SELM__DCOCLK;
+    UCSCTL5 = DIVS__1;
+}
+
+void config_timerA2(void)
+{
+    TA2CTL = TASSEL_2 + MC_1 + ID_3;    // SMCLK, up mode, divider = 8
+    TA2CCR0 = 200;                       // Set period
+    TA2CCTL0 = CCIE;                     // Enable interrupt
+}
+
+void init_all_hardware(void)
+{
+    init_SMCLK_25MHz();
+    i2c_init();
+    ssd1306_init();
+    adc_init();
+    init_timerA0_capture();
+    timer_init();
+    config_timerA2();  // Tilføj denne linje
+}
+
+/****************************************************************************
+ * Motor Control Functions
+ ****************************************************************************/
+
+/*
+void update_motor_control(void)
+{
+    float Gm = 1023.0f / MAX_ENCODER_FREQ;
+    float G = 1.0f;
+    float Xe = target_speed - current_speed;
+    
+    // Meget forsigtig spændingskompensation
+    float voltage_comp = 1.0f;
+    if(supply_voltage > 1.0f)
+    {
+        float voltage_error = (NOMINAL_VOLTAGE - supply_voltage) / NOMINAL_VOLTAGE;
+        voltage_comp = 1.0f + (voltage_error * VOLTAGE_COMP_GAIN);
+        if(voltage_comp > 1.05f) voltage_comp = 1.05f;  // Begrænser til ±5%
+        if(voltage_comp < 0.95f) voltage_comp = 0.95f;
+    }
+    
+    float duty = G * Gm * Xe * voltage_comp;
+
+    if (duty > 1023.0f)
+        duty = 1023.0f;
+    else if (duty < 0.0f)
+        duty = 0.0f;
+
+    TA1CCR1 = (uint16_t)duty;
+}
+*/
+
+/*float calculate_frequency(uint16_t capture_value)
+{
+    if (capture_value == 0 || capture_value > 32768) return 0.0f;
+    return 32768.0f / (float)capture_value;
+}
+*/
+/****************************************************************************
+ * Display Functions
+ ****************************************************************************/
+void update_display(float freq1, float freq2)
+{
+    char str[32];
+    
+    // F1 frekvens
+    if (freq1 > 0)
+    {
+        int freq1_whole = (int)freq1;
+        int freq1_frac = (int)((freq1 - freq1_whole) * 10);
+        snprintf(str, sizeof(str), "F1: %d.%dHz    ", freq1_whole, freq1_frac);
+        ssd1306_printText(LABEL_X_POS, F1_LINE, str);
+    }
+    
+    // F2 frekvens
+    if (freq2 > 0)
+    {
+        int freq2_whole = (int)freq2;
+        int freq2_frac = (int)((freq2 - freq2_whole) * 10);
+        snprintf(str, sizeof(str), "F2: %d.%dHz    ", freq2_whole, freq2_frac);
+        ssd1306_printText(LABEL_X_POS, F2_LINE, str);
+    }
+    
+    // PWM værdi
+    snprintf(str, sizeof(str), "PWM:%3u%%    ", 
+        (TA1CCR1 * 100UL) / TA1CCR0_VALUE);
+    ssd1306_printText(LABEL_X_POS, PWM_LINE, str);
+    
+    // Xd (desired value)
+    snprintf(str, sizeof(str), "Xd:%4u    ", adc_data);
+    ssd1306_printText(LABEL_X_POS, XD_LINE, str);
+    
+    // Xf (faktuelle værdi)
+    //float current_freq = (freq1 + freq2) / 2.0f;
+    float Xf = current_speed;
+    snprintf(str, sizeof(str), "Xf:%d.%02d    ", 
+        (int)Xf, 
+        (int)(((Xf - (int)Xf) * 100) >= 0 ? ((Xf - (int)Xf) * 100) : -((Xf - (int)Xf) * 100)));
+    ssd1306_printText(LABEL_X_POS, XF_LINE, str);
+    
+    // Xe (error)
+    Xe = target_speed - current_speed;
+    snprintf(str, sizeof(str), "Xe:%d.%02d    ", 
+        (int)Xe, 
+        (int)(((Xe - (int)Xe) * 100) >= 0 ? ((Xe - (int)Xe) * 100) : -((Xe - (int)Xe) * 100)));
+    ssd1306_printText(LABEL_X_POS, XE_LINE, str);
+}
+
+/****************************************************************************
+ * Interrupt Service Rutiner
+ ****************************************************************************/
+#pragma vector=TIMER0_A1_VECTOR
+__interrupt void Timer_A1_ISR(void)
+{
+    static unsigned int last1 = 0;
+    static unsigned int last2 = 0;
+    switch(TA0IV)
+    {
+        case 0x02:
+            if(last1 > TA0CCR1)
+                captured_value1 = TA0CCR1 + (65535 - last1);
+            else
+                captured_value1 = TA0CCR1 - last1;
+            last1 = TA0CCR1;
+            P6OUT |= BIT1;
+            P2OUT ^= BIT2;
+            t_flag1 = 1;
+            break;
+        case 0x04:
+            captured_value2 = TA0CCR2 - last2;
+            last2 = TA0CCR2;
+            P6OUT |= BIT2;
+            P2OUT ^= BIT3;
+            t_flag2 = 1;
+            break;
+    }
+}
+
+#pragma vector = ADC12_VECTOR
+__interrupt void ADC12_ISR(void)
+{
+    ADC12CTL0 &= ~ADC12ENC;
+    if (ADC12IFG != ADC12IFG0)
+    {
+        for (;;)
+        {
+        }
+    }
+    adc_data = ADC12MEM0;   // Læs rå ADC værdi
+    adc_flag = 1;
+    ADC12CTL0 |= ADC12ENC;
+}
+
+#pragma vector = TIMER2_A0_VECTOR
+__interrupt void TA2_ISR(void)
+{
+    ADC12CTL0 |= ADC12ENC | ADC12SC;
+}
+
+/****************************************************************************
+ * Main Program
+ ****************************************************************************/
+int main(void)
+{
+    WDTCTL = WDTPW | WDTHOLD;
+    
+    init_all_hardware();
+    ssd1306_clearDisplay();
+    
+    __bis_SR_register(GIE);
+    
+    float freq1 = 0.0f, freq2 = 0.0f;
+    float adc_res_av = 0;
+    uint8_t k = 0;
+    float freq1_av = 0.0f;
+    uint8_t n1 = 0;
+    float Gm = 1023.0f / MAX_ENCODER_FREQ;
+    
+    while(1)
+    {
+        if (adc_flag == 1)
+        {
+            adc_flag = 0;
+            adc_res_av = adc_data + adc_res_av;
+            k++;
+            if (k == 10)
+            {
+                uint16_t averaged_adc = adc_res_av / k;
+                target_speed = (averaged_adc * MAX_ENCODER_FREQ) / 1023.0f;
+                // Test direkte PWM kontrol
+                //TA1CCR1 = averaged_adc;  // Tilføj denne linje for test
+                k = 0;
+                adc_res_av = 0;
+        }
+        }
+        
+        // Håndter frekvens opdateringer
+        // I main-funktionen, hvor t_flag1 håndteres:
+if (t_flag1)
+{
+    //freq1 = calculate_frequency(captured_value1);
+    freq1 = 32768.0f / (float)captured_value1;
+    
+    if (n1 < 10)
+    {
+        n1++;
+        freq1_av = freq1_av + freq1;
+    }
+    else
+    {
+        n1 = 0;
+        float freq_average = freq1_av / 10.0f;
+        freq1_av = 0;
+        
+        // Opdater current_speed (Xf)
+        current_speed = freq_average;  // Dette er Xf
+        
+        // target_speed er allerede Xd
+        
+        // Beregn Xe (error)
+        Xe = target_speed - current_speed;  // Dette er Xe = Xd - Xf
+        
+        // Beregn ny PWM værdi
+        // PWM = (Xe * G) + sidste PWM værdi
+        float new_pwm = (Xe * G_MOTOR) + TA1CCR1;
+        
+        // Begræns PWM værdi
+        if (new_pwm > 1023.0f)
+            new_pwm = 1023.0f;
+        else if (new_pwm < 0.0f)
+            new_pwm = 0.0f;
+        
+        // Opdater PWM register
+        TA1CCR1 = new_pwm;
+    }
+    t_flag1 = 0;
+}
+        
+        // Kun brug t_flag2 til display formål
+        if (t_flag2)
+        {
+            //freq2 = calculate_frequency(captured_value2);
+            t_flag2 = 0;
+        }
+        
+        update_display(freq1, freq2);
+        __delay_cycles(5000);
+    }
+    return 0;
+}
