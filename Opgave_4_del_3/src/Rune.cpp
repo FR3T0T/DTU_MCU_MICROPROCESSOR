@@ -17,11 +17,11 @@
 // Global Variables
 volatile int adcResult = 0;              // ADC result
 volatile char adc_flag = 0;              // ADC conversion flag
-float G = 1.0;                         // Initial proportional gain
+float G = 0.5;                         // Initial proportional gain
 volatile float Gm;                     // Motor gain scaling
 volatile float Gc;                     // Corrected gain = G * (V2/V1)
 volatile float currentVoltage = 12.0;  // Current motor voltage
-volatile int direction = 1;            // 1 forward, -1 reverse
+//volatile int direction = 1;            // 1 forward, -1 reverse
 
 // Encoder variables
 volatile unsigned int captured_value1 = 0;  // For encoder A
@@ -54,15 +54,14 @@ volatile float slew = SLEW_RATE_LIMIT;
 char Xdshow[10], Xfshow[10], Xeshow[10], Xcshow[10];
 
 void init_ports(void) {
-    P7SEL = 0;     // Configure Port 7 as GPIO
-    pinMode(P1_1, INPUT_PULLUP);
-    pinMode(P1_2, INPUT_PULLUP);    // Encoder A input
-    pinMode(P1_3, INPUT_PULLUP);    // Encoder B input
-    pinMode(P4_7, OUTPUT);
-    pinMode(P1_0, OUTPUT);
-    
-    P2DIR |= BIT2 + BIT3;          // Debug outputs
-    P2OUT &= ~(BIT2 + BIT3);       // Initialize low
+    P7SEL = 0;                    // Configure Port 7 as GPIO
+    P1DIR &= ~(BIT1 + BIT2 + BIT3);     // Set P1.1-3 as inputs
+    P1REN |= BIT1 + BIT2 + BIT3;        // Enable pull-up/down
+    P1OUT |= BIT1 + BIT2 + BIT3;        // Set as pull-up
+    P4DIR |= BIT7;                       // P4.7 as output
+    P1DIR |= BIT0;                       // P1.0 as output
+    P2DIR |= BIT2 + BIT3;               // P2.2-3 as outputs
+    P2OUT &= ~(BIT2 + BIT3);            // Initialize P2.2-3 low
 }
 
 void setupADC12(void) {
@@ -75,8 +74,7 @@ void setupADC12(void) {
     ADC12CTL2 = ADC12RES_1;             // 10-bit resolution
 }
 
-void init_SMCLK_25MHz(void) {
-    WDTCTL = WDTPW | WDTHOLD;   
+void init_SMCLK_20MHz(void) { 
     P5SEL |= BIT2 + BIT3;       
     P5SEL |= BIT4 + BIT5;
     
@@ -124,14 +122,6 @@ void init_capture(void) {
     TA0CCTL2 &= ~CCIFG;
 }
 
-long calculate_average(volatile int* buffer) {
-    long sum = 0;
-    for(int i = 0; i < SAMPLES_AVG; i++) {
-        sum += buffer[i];
-    }
-    return sum / SAMPLES_AVG;
-}
-
 void update_gain(void) {
     // Beregn gain kompensation baseret på spændingsændring
     Gm = 1023.0 / FREQ_MAX;  // PWM scaling factor
@@ -151,24 +141,20 @@ void calculate_speed_setpoint(void) {
 void improve_stability(void) {
     static float prev_error = 0;
     static float output_prev = 0;
-    float alpha = 0.7;  // Filter koefficient
+    float alpha = 0.7;
     
-    // Opdater gains og kompensation
     update_gain();
     
-    // Beregn error med retning
-    Xe = Xd - (Xf * direction);
+    // Ændret error beregning
+    Xe = Xd - Xf;
     
-    // Filtrer error signal
     Xe = (alpha * Xe) + ((1-alpha) * prev_error);
     prev_error = Xe;
     
-    // Beregn kontrol output med slew rate limiting
     float output = Xd + (Gc * Xe);
     Xc = output_prev + slew * (output - output_prev);
     output_prev = Xc;
     
-    // Begræns output
     if (Xc > PWM_TOP) {
         Xc = PWM_TOP;
     } else if (Xc < 0) {
@@ -182,7 +168,7 @@ int main(void) {
     i2c_init();
     init_ports();
     setupADC12();
-    init_SMCLK_25MHz();
+    init_SMCLK_20MHz();
     setupPWM();
     setupTimerA2();
     init_capture();
@@ -214,15 +200,12 @@ int main(void) {
             
             // Beregn gennemsnit når vi har præcis 10 samples
             if (samples_collected == SAMPLES_AVG) {
-                Xf_A = calculate_average(freq_buffer_A);
-                Xf_B = calculate_average(freq_buffer_B);
-                
-                if (USE_FREQ_SCALING) {
-                    Xf = (Xf_A + Xf_B) / 2;
-                } else {
-                    // Konverter til digital spænding ækvivalent
-                    Xf = ((Xf_A + Xf_B) * 1023) / (2 * FREQ_MAX);
+                // Beregn ét samlet gennemsnit
+                long sum = 0;
+                for(int i = 0; i < SAMPLES_AVG; i++) {
+                     sum += freq_buffer_A[i] + freq_buffer_B[i];
                 }
+                Xf = sum / (SAMPLES_AVG * 2);
             }
             
             freq1_prev = freq1;
@@ -264,20 +247,6 @@ int main(void) {
 #pragma vector = TIMER0_A1_VECTOR
 __interrupt void TIMER0_A1_ISR(void) {
     static int n1 = 0, n2 = 0;
-    static char prevPhaseA = 0, prevPhaseB = 0;
-    
-    char phaseA = P1IN & BIT2;
-    char phaseB = P1IN & BIT3;
-    
-    if (prevPhaseA != phaseA) {
-        if (phaseB != phaseA) {
-            direction = 1;
-        } else {
-            direction = -1;
-        }
-    }
-    prevPhaseA = phaseA;
-    prevPhaseB = phaseB;
     
     switch (TA0IV) {
         case 0x02:  // CCR1 - Encoder A
