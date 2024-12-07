@@ -1,6 +1,8 @@
 /****************************************************************************
  * Co-pilot, Chat-GPT & Claude AI er blevt brugt som hjælp til fejlfinding
  * 
+ * Opgave 4, del 3
+ * 
  * MSP430 Motor Kontrol System
  * 
  * Dette program implementerer et motor kontrol system med feedback fra to encodere.
@@ -27,7 +29,7 @@
  * - P2.2: Toggle ved Encoder A interrupt
  * - P2.3: Toggle ved Encoder B interrupt
  ****************************************************************************/
-#include <Arduino.h>        // Arduino bibliotek - ikke nødvendigt i dette MSP430 projekt
+#include <stdio.h>          // Standard C bibliotek - bruges til sprintf funktion
 #include "i2c.h"            // Driver til I2C kommunikation - bruges til at snakke med OLED displayet
 #include "ssd1306.h"        // Driver til OLED display - giver funktioner til at vise tekst og grafik
 #include <msp430f5529.h>    // MSP430 mikrocontroller definitioner - giver adgang til alle hardware funktioner
@@ -102,14 +104,14 @@ char Xdshow[10], Xfshow[10], Xeshow[10], Xcshow[10];
 ****************************************************************************/
 void init_ports(void)
 {
-    P7SEL = 0;                          // Port 7 som GPIO
-    P1DIR &= ~(BIT1 + BIT2 + BIT3);     // Encoder inputs
-    P1REN |= BIT1 + BIT2 + BIT3;        // Pullup modstande
-    P1OUT |= BIT1 + BIT2 + BIT3;        // Aktiver pullup
-    P4DIR |= BIT7;                      // Status LED output
-    P1DIR |= BIT0;                      // Status LED output
-    P2DIR |= BIT2 + BIT3;               // Motor kontrol outputs
-    P2OUT &= ~(BIT2 + BIT3);            // Motor initial tilstand off
+    P7SEL = 0;                          // Port P7.0 som GPIO for ADC input
+    P1DIR &= ~(BIT2 + BIT3);            // P1.2 & P1.3 som encoder inputs
+    P1REN |= BIT2 + BIT3;               // Pullup modstande på P1.2-P1.3
+    P1OUT |= BIT2 + BIT3;               // Aktiver pullup på P1.2-P1.3
+    P4DIR |= BIT7;                      // P4.7 som status LED output
+    P1DIR |= BIT0;                      // P1.0 som status LED output
+    P2DIR |= BIT2 + BIT3;               // P2.2 og P2.3 som motor kontrol outputs
+    P2OUT &= ~(BIT2 + BIT3);            // P2.2 og P2.3 startes i lav tilstand
 }
 
 void setupADC12(void)
