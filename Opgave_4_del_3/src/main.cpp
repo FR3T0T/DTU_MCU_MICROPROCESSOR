@@ -9,31 +9,30 @@
 #define MAX_DUTY_CYCLE 1023      // 10-bit resolution for PWM
 #define TIMER_CLK 32768          // ACLK frequency for Timer A0
 #define SAMPLES_AVG 1           // Exactly 10 samples as required
-#define NOMINAL_VOLTAGE 12.0     // Nominal voltage for motor
+#define NOMINAL_VOLTAGE 9.0     // Nominal voltage for motor
 #define USE_FREQ_SCALING 0       // 0 for digital voltage scaling (default), 1 for frequency
 #define PWM_TOP 1023            // 10-bit resolution
 #define SLEW_RATE_LIMIT 0.5     // Slew rate limiting factor
 
 // Global Variables
-volatile int adcResult = 0;              // ADC result
-volatile char adc_flag = 0;              // ADC conversion flag
-float G = 0.5;                         // Initial proportional gain
+volatile int adcResult = 0;            // ADC result
+volatile char adc_flag = 0;            // ADC conversion flag
+float G = 7.0;                         // Initial proportional gain
 volatile float Gm;                     // Motor gain scaling
 volatile float Gc;                     // Corrected gain = G * (V2/V1)
 volatile float currentVoltage = 12.0;  // Current motor voltage
-//volatile int direction = 1;            // 1 forward, -1 reverse
 
 // Encoder variables
 volatile unsigned int captured_value1 = 0;  // For encoder A
 volatile unsigned int captured_value2 = 0;  // For encoder B
 volatile char t_flag1 = 0;
 volatile char t_flag2 = 0;
-volatile long Xd = 0;                     // Desired speed (from pot)
-volatile long Xf_A = 0;                   // Actual speed from encoder A
-volatile long Xf_B = 0;                   // Actual speed from encoder B
-volatile long Xf = 0;                     // Average encoder speed
-volatile long Xe = 0;                     // Error
-volatile long Xc = 0;                     // Control output
+volatile long Xd = 0;                       // Desired speed (from pot)
+volatile long Xf_A = 0;                     // Actual speed from encoder A
+volatile long Xf_B = 0;                     // Actual speed from encoder B
+volatile long Xf = 0;                       // Average encoder speed
+volatile long Xe = 0;                       // Error
+volatile long Xc = 0;                       // Control output
 
 // Moving average arrays
 volatile int freq_buffer_A[SAMPLES_AVG] = {0};
