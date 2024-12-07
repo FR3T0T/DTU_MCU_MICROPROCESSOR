@@ -1,207 +1,291 @@
-#include <Arduino.h>
-#include "i2c.h"
-#include "ssd1306.h"
-#include <msp430f5529.h>
-#include <stdint.h>
+/****************************************************************************
+ * Co-pilot, Chat-GPT & Claude AI er blevt brugt som hjælp til fejlfinding
+ * 
+ * MSP430 Motor Kontrol System
+ * 
+ * Dette program implementerer et motor kontrol system med feedback fra to encodere.
+ * Systemet bruger PWM til motorstyring og viser status på et SSD1306 OLED display.
+ * Mikrocontrolleren kører på 20MHz med præcis hastighedsregulering.
+ * 
+ * Hardware forbindelser:
+ * Encodere:
+ * - Encoder A Signal: P1.2 (Timer A0.1 capture input)
+ * - Encoder B Signal: P1.3 (Timer A0.2 capture input)
+ * 
+ * Motor styring:
+ * - PWM Output: P2.0 (Timer A1.1 output)
+ * - Motor Enable: P2.2, P2.3 (GPIO outputs)
+ * 
+ * Display (I2C):
+ * - SCL: P3.0
+ * - SDA: P3.1
+ * 
+ * ADC Input:
+ * - Hastighedsreference: P7.0 (ADC12 kanal 12)
+ * 
+ * Debug outputs:
+ * - P2.2: Toggle ved Encoder A interrupt
+ * - P2.3: Toggle ved Encoder B interrupt
+ ****************************************************************************/
+#include <Arduino.h>        // Arduino bibliotek - ikke nødvendigt i dette MSP430 projekt
+#include "i2c.h"            // Driver til I2C kommunikation - bruges til at snakke med OLED displayet
+#include "ssd1306.h"        // Driver til OLED display - giver funktioner til at vise tekst og grafik
+#include <msp430f5529.h>    // MSP430 mikrocontroller definitioner - giver adgang til alle hardware funktioner
+#include <stdint.h>         // Standard integer typer - sikrer præcise størrelser på variable (8-bit, 16-bit, etc.)
 
-// Constants for motor control
-#define FREQ_MAX 500             // Maximum encoder frequency
-#define MAX_DUTY_CYCLE 1023      // 10-bit resolution for PWM
-#define TIMER_CLK 32768          // ACLK frequency for Timer A0
-#define SAMPLES_AVG 1           // Exactly 10 samples as required
-#define NOMINAL_VOLTAGE 9.0     // Nominal voltage for motor
-#define USE_FREQ_SCALING 0       // 0 for digital voltage scaling (default), 1 for frequency
-#define PWM_TOP 1023            // 10-bit resolution
-#define SLEW_RATE_LIMIT 0.5     // Slew rate limiting factor
+/****************************************************************************
+* Konstanter og Konfiguration
+****************************************************************************/
+// System parametre
+#define FREQ_MAX 500            // Maksimal encoder frekvens i Hz
+#define MAX_DUTY_CYCLE 1023     // 10-bit PWM opløsning
+#define PWM_TOP 1023            // Maksimal PWM værdi
 
-// Global Variables
-volatile int adcResult = 0;            // ADC result
-volatile char adc_flag = 0;            // ADC conversion flag
-float G = 7.0;                         // Initial proportional gain
-volatile float Gm;                     // Motor gain scaling
-volatile float Gc;                     // Corrected gain = G * (V2/V1)
-volatile float currentVoltage = 12.0;  // Current motor voltage
+// Timer og sampling parametre
+#define TIMER_CLK 32768         // ACLK frekvens (32.768 kHz)
+#define SAMPLES_AVG 1           // Antal samples for midling
 
-// Encoder variables
-volatile unsigned int captured_value1 = 0;  // For encoder A
-volatile unsigned int captured_value2 = 0;  // For encoder B
-volatile char t_flag1 = 0;
-volatile char t_flag2 = 0;
-volatile long Xd = 0;                       // Desired speed (from pot)
-volatile long Xf_A = 0;                     // Actual speed from encoder A
-volatile long Xf_B = 0;                     // Actual speed from encoder B
-volatile long Xf = 0;                       // Average encoder speed
-volatile long Xe = 0;                       // Error
-volatile long Xc = 0;                       // Control output
+// Motor parametre
+#define NOMINAL_VOLTAGE 9.0     // Motor nominel spænding
+#define SLEW_RATE_LIMIT 0.5     // Hastighedsbegrænsning for blød start/stop
 
-// Moving average arrays
-volatile int freq_buffer_A[SAMPLES_AVG] = {0};
-volatile int freq_buffer_B[SAMPLES_AVG] = {0};
-volatile int buffer_index = 0;
-volatile int samples_collected = 0;
+/****************************************************************************
+* Globale Variable
+****************************************************************************/
+// ADC variable
+volatile int adcResult = 0;            // ADC konverteringsresultat
+volatile char adc_flag = 0;            // Flag for ny ADC værdi
 
-// Capture values for encoders
-volatile unsigned int last1 = 0;         
-volatile unsigned int last2 = 0;         
-volatile int freq1 = 0;                  
-volatile int freq2 = 0;                  
-volatile float freq1_prev = 0;           
-volatile float freq2_prev = 0;
-volatile float slew = SLEW_RATE_LIMIT;
+// Reguleringsvariable
+float G = 0.5;                         // Proportional reguleringsforstærkning
+volatile float Gm;                     // Motor gain scaling faktor
+volatile float Gc;                     // Spændingskorrigeret forstærkning
+volatile float currentVoltage = 12.0;  // Aktuel forsyningsspænding
 
-// Display formatting
+// Encoder målinger
+volatile unsigned int captured_value1 = 0;  // Timer capture for encoder A
+volatile unsigned int captured_value2 = 0;  // Timer capture for encoder B
+volatile char t_flag1 = 0;                  // Ny måling flag encoder A
+volatile char t_flag2 = 0;                  // Ny måling flag encoder B
+
+// Reguleringsværdier
+volatile long Xd = 0;                  // Ønsket hastighed (setpoint)
+volatile long Xf_A = 0;                // Målt hastighed encoder A
+volatile long Xf_B = 0;                // Målt hastighed encoder B
+volatile long Xf = 0;                  // Gennemsnitlig hastighed
+volatile long Xe = 0;                  // Reguleringsfejl
+volatile long Xc = 0;                  // Kontrolsignal (PWM værdi)
+
+/****************************************************************************
+* Buffer System til Midling
+****************************************************************************/
+// Cirkulære buffers til frekvensværdier
+volatile int freq_buffer_A[SAMPLES_AVG] = {0};  // Buffer for encoder A
+volatile int freq_buffer_B[SAMPLES_AVG] = {0};  // Buffer for encoder B
+volatile int buffer_index = 0;                  // Aktuel buffer position
+volatile int samples_collected = 0;             // Antal indsamlede samples
+
+// Encoder frekvensberegning
+volatile unsigned int last1 = 0;         // Sidste capture værdi A
+volatile unsigned int last2 = 0;         // Sidste capture værdi B
+volatile int freq1 = 0;                  // Beregnet frekvens A
+volatile int freq2 = 0;                  // Beregnet frekvens B
+volatile float freq1_prev = 0;           // Forrige frekvens A
+volatile float freq2_prev = 0;           // Forrige frekvens B
+volatile float slew = SLEW_RATE_LIMIT;   // Aktuel slew rate
+
+// Display formatering
 char Xdshow[10], Xfshow[10], Xeshow[10], Xcshow[10];
 
-void init_ports(void) {
-    P7SEL = 0;                    // Configure Port 7 as GPIO
-    P1DIR &= ~(BIT1 + BIT2 + BIT3);     // Set P1.1-3 as inputs
-    P1REN |= BIT1 + BIT2 + BIT3;        // Enable pull-up/down
-    P1OUT |= BIT1 + BIT2 + BIT3;        // Set as pull-up
-    P4DIR |= BIT7;                       // P4.7 as output
-    P1DIR |= BIT0;                       // P1.0 as output
-    P2DIR |= BIT2 + BIT3;               // P2.2-3 as outputs
-    P2OUT &= ~(BIT2 + BIT3);            // Initialize P2.2-3 low
+/****************************************************************************
+* System Initialisering
+****************************************************************************/
+void init_ports(void)
+{
+    P7SEL = 0;                          // Port 7 som GPIO
+    P1DIR &= ~(BIT1 + BIT2 + BIT3);     // Encoder inputs
+    P1REN |= BIT1 + BIT2 + BIT3;        // Pullup modstande
+    P1OUT |= BIT1 + BIT2 + BIT3;        // Aktiver pullup
+    P4DIR |= BIT7;                      // Status LED output
+    P1DIR |= BIT0;                      // Status LED output
+    P2DIR |= BIT2 + BIT3;               // Motor kontrol outputs
+    P2OUT &= ~(BIT2 + BIT3);            // Motor initial tilstand off
 }
 
-void setupADC12(void) {
-    ADC12CTL0 &= ~ADC12ENC;             
-    ADC12CTL0 = ADC12SHT0_2 | ADC12ON;  
-    ADC12CTL1 = ADC12SHP;               
-    ADC12MCTL0 = ADC12INCH_12;          // P7.0
-    ADC12CTL0 |= ADC12ENC;              
-    ADC12IE |= ADC12IE0;                
-    ADC12CTL2 = ADC12RES_1;             // 10-bit resolution
+void setupADC12(void)
+{
+    ADC12CTL0 &= ~ADC12ENC;             // Disable for konfiguration
+    ADC12CTL0 = ADC12SHT0_2 | ADC12ON;  // Sample tid og power on
+    ADC12CTL1 = ADC12SHP;               // Sample timing kontrol
+    ADC12MCTL0 = ADC12INCH_12;          // ADC input kanal
+    ADC12CTL0 |= ADC12ENC;              // Enable konvertering
+    ADC12IE |= ADC12IE0;                // Enable interrupt
+    ADC12CTL2 = ADC12RES_1;             // 10-bit opløsning
 }
 
-void init_SMCLK_20MHz(void) { 
-    P5SEL |= BIT2 + BIT3;       
-    P5SEL |= BIT4 + BIT5;
+/****************************************************************************
+* Timere og PWM Konfiguration
+****************************************************************************/
+void init_SMCLK_20MHz(void)
+{ 
+    P5SEL |= BIT2 + BIT3;               // XT2 krystal pins
+    P5SEL |= BIT4 + BIT5;               // XT2 krystal pins
     
-    __bis_SR_register(SCG0);     
-    UCSCTL0 = 0x0000;           
-    UCSCTL1 = DCORSEL_7;        
-    UCSCTL2 = FLLD_0 + 610;     // 20MHz
-    __bic_SR_register(SCG0);     
+    __bis_SR_register(SCG0);            // Disable FLL
+    UCSCTL0 = 0x0000;                   // Reset tuning
+    UCSCTL1 = DCORSEL_7;                // DCO frekvensområde
+    UCSCTL2 = FLLD_0 + 610;             // DCOCLK = 20MHz
+    __bic_SR_register(SCG0);            // Enable FLL
     
+    // Vent på stabil oscillator
     do {
         UCSCTL7 &= ~(XT2OFFG + XT1LFOFFG + DCOFFG);
         SFRIFG1 &= ~OFIFG;
     } while (SFRIFG1 & OFIFG);
     
-    UCSCTL3 = SELREF__REFOCLK;
-    UCSCTL4 = SELA__XT1CLK | SELS__DCOCLK | SELM__DCOCLK;
-    UCSCTL5 = DIVS__1;
+    // Clock konfiguration
+    UCSCTL3 = SELREF__REFOCLK;         // FLL reference
+    UCSCTL4 = SELA__XT1CLK |           // ACLK = XT1
+              SELS__DCOCLK |           // SMCLK = DCO
+              SELM__DCOCLK;            // MCLK = DCO
+    UCSCTL5 = DIVS__1;                 // SMCLK deling
 }
 
-void setupPWM(void) {
-    TA1CCR0 = PWM_TOP;          
-    TA1CCTL1 = OUTMOD_7;        
-    TA1CCR1 = 0;                
-    TA1CTL = TASSEL_2 | MC_1;   
-    P2DIR |= BIT0;              
-    P2SEL |= BIT0;              
+/****************************************************************************
+* Motor Kontrol Funktioner
+****************************************************************************/
+void setupPWM(void)
+{
+    TA1CCR0 = PWM_TOP;                 // PWM periode
+    TA1CCTL1 = OUTMOD_7;               // PWM output mode
+    TA1CCR1 = 0;                       // Start med 0% duty cycle
+    TA1CTL = TASSEL_2 | MC_1;          // SMCLK kilde, up mode
+    P2DIR |= BIT0;                     // PWM output pin
+    P2SEL |= BIT0;                     // Timer funktion
 }
 
-void setupTimerA2(void) {
-    TA2CCTL0 = CCIE;                   
-    TA2CCR0 = 200;                     // ~10 Hz sampling
-    TA2CTL = TASSEL_1 | ID_0 | MC_1;   
+void setupTimerA2(void)
+{
+    TA2CCTL0 = CCIE;                   // Interrupt enable
+    TA2CCR0 = 200;                     // Periode for 10 Hz sampling
+    TA2CTL = TASSEL_1 | ID_0 | MC_1;   // ACLK, ingen deling, up mode
 }
 
-void init_capture(void) {
-    P1DIR &= ~(BIT2 + BIT3);       
-    P1SEL |= BIT2 + BIT3;          
+/****************************************************************************
+* Encoder Interface
+****************************************************************************/
+void init_capture(void)
+{
+    P1DIR &= ~(BIT2 + BIT3);           // Encoder inputs
+    P1SEL |= BIT2 + BIT3;              // Timer capture funktion
     
-    TA0CTL = TASSEL_1 | MC_2;      // ACLK, Continuous mode
+    TA0CTL = TASSEL_1 | MC_2;          // ACLK, continuous mode
     
-    TA0CCTL1 = CM_3 | CCIS_0 | CAP | CCIE;  // Capture both edges
-    TA0CCTL2 = CM_3 | CCIS_0 | CAP | CCIE;  
+    // Capture konfiguration
+    TA0CCTL1 = CM_3 |                  // Både stigende og faldende flanke
+               CCIS_0 |                // CCIxA input 
+               CAP |                   // Capture mode
+               CCIE;                   // Interrupt enable
+               
+    TA0CCTL2 = CM_3 | CCIS_0 | CAP | CCIE;  // Same for kanal 2
     
+    // Clear interrupt flags
     TA0CCTL1 &= ~CCIFG;
     TA0CCTL2 &= ~CCIFG;
 }
 
-void update_gain(void) {
-    // Beregn gain kompensation baseret på spændingsændring
-    Gm = 1023.0 / FREQ_MAX;  // PWM scaling factor
-    Gc = G * (currentVoltage / NOMINAL_VOLTAGE);
+/****************************************************************************
+* Regulering og Stabilitet
+****************************************************************************/
+void update_gain(void) 
+{
+    // Beregn system forstærkning
+    Gm = 1023.0 / FREQ_MAX;                         // PWM til frekvens skalering
+    Gc = G * (currentVoltage / NOMINAL_VOLTAGE);    // Spændingskompensation
 }
 
-void calculate_speed_setpoint(void) {
-    if (USE_FREQ_SCALING) {
-        // Option 1: Frekvens-baseret skalering
-        Xd = ((long)adcResult * FREQ_MAX) / 1023;
-    } else {
-        // Option 2: Digital spændings-ækvivalent (standard)
-        Xd = adcResult;
-    }
-}
-
-void improve_stability(void) {
-    static float prev_error = 0;
-    static float output_prev = 0;
-    float alpha = 0.7;
+void improve_stability(void)
+{
+    static float prev_error = 0;        // Forrige reguleringsfejl
+    static float output_prev = 0;       // Forrige output
+    float alpha = 0.7;                  // Filterkonstant
     
     update_gain();
     
-    // Ændret error beregning
-    Xe = Xd - Xf;
-    
-    Xe = (alpha * Xe) + ((1-alpha) * prev_error);
+    // Reguleringsalgoritme
+    Xe = Xd - Xf;                      // Beregn fejl
+    Xe = (alpha * Xe) +                // Fejlfiltrering
+         ((1-alpha) * prev_error);     
     prev_error = Xe;
     
+    // Beregn styresignal med slew rate begrænsning
     float output = Xd + (Gc * Xe);
     Xc = output_prev + slew * (output - output_prev);
     output_prev = Xc;
     
-    if (Xc > PWM_TOP) {
+    // Begræns output
+    if (Xc > PWM_TOP)
+    {
         Xc = PWM_TOP;
-    } else if (Xc < 0) {
+    }
+    else if (Xc < 0)
+    {
         Xc = 0;
     }
 }
 
-int main(void) {
-    WDTCTL = WDTPW | WDTHOLD;   
+/****************************************************************************
+* Hovedprogram
+****************************************************************************/
+int main(void)
+{
+    // System initialisering
+    WDTCTL = WDTPW | WDTHOLD;           // Stop watchdog
     
-    i2c_init();
-    init_ports();
-    setupADC12();
-    init_SMCLK_20MHz();
-    setupPWM();
-    setupTimerA2();
-    init_capture();
+    i2c_init();                         // I2C til display
+    init_ports();                       // GPIO setup
+    setupADC12();                       // ADC konfiguration
+    init_SMCLK_20MHz();                 // System clock
+    setupPWM();                         // Motor PWM
+    setupTimerA2();                     // Sampling timer
+    init_capture();                     // Encoder capture
     
+    // Display initialisering
     ssd1306_init();
     ssd1306_clearDisplay();
     
-    update_gain();  // Initialize gains
+    update_gain();                      // Initial gain beregning
     
-    __enable_interrupt();
+    __enable_interrupt();               // Global interrupt enable
 
-    while(1) {
-        Xd = adcResult;
-        if (t_flag1 || t_flag2) {  // New encoder data
+    // Hovedløkke
+    while(1)
+    {
+        // Encoder databehandling
+        if (t_flag1 || t_flag2) 
+        {
             t_flag1 = t_flag2 = 0;
             
-            // Slew rate limiting på frekvenser
+            // Frekvens filtrering
             freq1 = freq1_prev + slew * (freq1 - freq1_prev);
             freq2 = freq2_prev + slew * (freq2 - freq2_prev);
             
-            // Opdater buffers
+            // Buffer opdatering
             freq_buffer_A[buffer_index] = freq1;
             freq_buffer_B[buffer_index] = freq2;
             buffer_index = (buffer_index + 1) % SAMPLES_AVG;
             
-            if (samples_collected < SAMPLES_AVG) {
+            if (samples_collected < SAMPLES_AVG) 
+            {
                 samples_collected++;
             }
             
-            // Beregn gennemsnit når vi har præcis 10 samples
-            if (samples_collected == SAMPLES_AVG) {
-                // Beregn ét samlet gennemsnit
+            // Beregn middelværdi
+            if (samples_collected == SAMPLES_AVG) 
+            {
                 long sum = 0;
-                for(int i = 0; i < SAMPLES_AVG; i++) {
+                for(int i = 0; i < SAMPLES_AVG; i++) 
+                {
                      sum += freq_buffer_A[i] + freq_buffer_B[i];
                 }
                 Xf = sum / (SAMPLES_AVG * 2);
@@ -211,20 +295,22 @@ int main(void) {
             freq2_prev = freq2;
         }
 
-        if (TA1CTL & TAIFG) {  // PWM period complete
-            TA1CTL &= ~TAIFG;   
-            
-            calculate_speed_setpoint();
+        // PWM opdatering
+        if (TA1CTL & TAIFG)
+        {
+            TA1CTL &= ~TAIFG;
+            Xd = adcResult;
             improve_stability();
-            TA1CCR1 = Xc;      // Update PWM
+            TA1CCR1 = Xc;
         }
 
-        // Update display
+        // Display opdatering
         sprintf(Xdshow, "%04d", (int)Xd);
         sprintf(Xfshow, "%04d", (int)Xf);
         sprintf(Xeshow, "%04d", (int)Xe);
         sprintf(Xcshow, "%04d", (int)Xc);
         
+        // Display opdatering fortsætter
         ssd1306_printText(0,0,"Xd:");
         ssd1306_printText(30,0,"     ");  
         ssd1306_printText(30,0,Xdshow);
@@ -243,74 +329,117 @@ int main(void) {
     }
 }
 
+/****************************************************************************
+* Interrupt Service Rutiner
+****************************************************************************/
+
+/**
+ * Timer0_A1 Interrupt Service Rutine
+ * 
+ * Håndterer capture interrupts fra begge encodere.
+ * For hver encoder:
+ * - Beregner tiden mellem pulser
+ * - Opdaterer capture flags
+ * - Toggler debug output
+ */
 #pragma vector = TIMER0_A1_VECTOR
-__interrupt void TIMER0_A1_ISR(void) {
-    static int n1 = 0, n2 = 0;
+__interrupt void TIMER0_A1_ISR(void)
+{
+    static int n1 = 0, n2 = 0;  // Tællere for antal captures
     
-    switch (TA0IV) {
-        case 0x02:  // CCR1 - Encoder A
-            TA0CCTL1 &= ~CCIFG;
+    switch (TA0IV)
+    {
+        case 0x02:               // CCR1 - Encoder A
+            TA0CCTL1 &= ~CCIFG;  // Clear interrupt flag
             
+            // Beregn tid mellem pulser med overflow håndtering
             if (last1 > TA0CCR1)
                 captured_value1 = 65535 - last1 + TA0CCR1;
             else
                 captured_value1 = TA0CCR1 - last1;
                 
-            last1 = TA0CCR1;
+            last1 = TA0CCR1;  // Gem aktuel værdi til næste gang
             
+            // Frekvensberegning hver anden capture (komplet periode)
             n1++;
-            if (n1 == 2) {
-                if (captured_value1 != 0) {
+            if (n1 == 2)
+            {
+                if (captured_value1 != 0)
+                {
                     freq1 = (int)(32768 / captured_value1);
                 }
                 captured_value1 = 0;
                 n1 = 0;
             }
             
-            P2OUT ^= BIT2;
-            t_flag1 = 1;
+            P2OUT ^= BIT2;  // Toggle debug output
+            t_flag1 = 1;    // Indiker ny måling klar
             break;
             
         case 0x04:  // CCR2 - Encoder B
-            TA0CCTL2 &= ~CCIFG;
+            TA0CCTL2 &= ~CCIFG;  // Clear interrupt flag
             
+            // Beregn tid mellem pulser med overflow håndtering
             if (last2 > TA0CCR2)
                 captured_value2 = 65535 - last2 + TA0CCR2;
             else
                 captured_value2 = TA0CCR2 - last2;
                 
-            last2 = TA0CCR2;
+            last2 = TA0CCR2;  // Gem aktuel værdi til næste gang
             
+            // Frekvensberegning hver anden capture (komplet periode)
             n2++;
-            if (n2 == 2) {
-                if (captured_value2 != 0) {
+            if (n2 == 2)
+            {
+                if (captured_value2 != 0)
+                {
                     freq2 = (int)(32768 / captured_value2);
                 }
                 captured_value2 = 0;
                 n2 = 0;
             }
             
-            P2OUT ^= BIT3;
-            t_flag2 = 1;
+            P2OUT ^= BIT3;  // Toggle debug output
+            t_flag2 = 1;    // Indiker ny måling klar
             break;
     }
 }
 
+/**
+ * ADC12 Interrupt Service Rutine
+ * 
+ * Håndterer ADC konvertering af setpoint værdien:
+ * - Gemmer konverteringsresultatet
+ * - Sætter flag for ny værdi
+ * - Genaktiverer ADC
+ */
 #pragma vector = ADC12_VECTOR
-__interrupt void ADC12_ISR(void) {
-    ADC12CTL0 &= ~ADC12ENC;
-    if (ADC12IFG != ADC12IFG0) {
-        for (;;) {
+__interrupt void ADC12_ISR(void)
+{
+    ADC12CTL0 &= ~ADC12ENC;  // Disable ADC
+    
+    // Verificer korrekt interrupt kilde
+    if (ADC12IFG != ADC12IFG0)
+    {
+        for (;;)
+        {  // Fejlhåndtering - stop hvis forkert interrupt
         }
     }
     
-    adcResult = ADC12MEM0;
-    adc_flag = 1;
-    ADC12CTL0 |= ADC12ENC;
+    adcResult = ADC12MEM0;  // Gem konverteringsresultat
+    adc_flag = 1;           // Indiker ny værdi klar
+    ADC12CTL0 |= ADC12ENC;  // Genaktiver ADC
 }
 
+/**
+ * Timer2_A0 Interrupt Service Rutine
+ * 
+ * Håndterer timing for ADC sampling:
+ * - Trigger ny ADC konvertering periodisk
+ */
 #pragma vector = TIMER2_A0_VECTOR
-__interrupt void TIMER2_A0_ISR(void) {
-    TA2CCTL0 &= ~CCIFG;
-    ADC12CTL0 |= ADC12SC;
+__interrupt void TIMER2_A0_ISR(void)
+{
+    TA2CCTL0 &= ~CCIFG;     // Clear interrupt flag
+    ADC12CTL0 |= ADC12SC;   // Start ny ADC konvertering
 }
