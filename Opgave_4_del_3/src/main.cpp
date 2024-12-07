@@ -335,12 +335,6 @@ int main(void)
 
 /**
  * Timer0_A1 Interrupt Service Rutine
- * 
- * Håndterer capture interrupts fra begge encodere.
- * For hver encoder:
- * - Beregner tiden mellem pulser
- * - Opdaterer capture flags
- * - Toggler debug output
  */
 #pragma vector = TIMER0_A1_VECTOR
 __interrupt void TIMER0_A1_ISR(void)
@@ -407,11 +401,6 @@ __interrupt void TIMER0_A1_ISR(void)
 
 /**
  * ADC12 Interrupt Service Rutine
- * 
- * Håndterer ADC konvertering af setpoint værdien:
- * - Gemmer konverteringsresultatet
- * - Sætter flag for ny værdi
- * - Genaktiverer ADC
  */
 #pragma vector = ADC12_VECTOR
 __interrupt void ADC12_ISR(void)
@@ -433,9 +422,6 @@ __interrupt void ADC12_ISR(void)
 
 /**
  * Timer2_A0 Interrupt Service Rutine
- * 
- * Håndterer timing for ADC sampling:
- * - Trigger ny ADC konvertering periodisk
  */
 #pragma vector = TIMER2_A0_VECTOR
 __interrupt void TIMER2_A0_ISR(void)
